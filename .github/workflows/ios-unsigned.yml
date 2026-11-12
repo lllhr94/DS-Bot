@@ -1,0 +1,114 @@
+# 作用: 在 GitHub 的云端 Mac 上编译 DS Bot 手机端, 产出一个未签名的 IPA。
+# 证书不会进仓库, 签名在你自己手机上的签名工具里做。
+# 依赖安装方式照抄了上游 release.yml 里 Android 那个 job (Node 24, link/ 和 mobile/ 各 npm ci)。
+
+name: iOS unsigned IPA
+
+on:
+  # 改动这个文件并推送时自动重跑, 方便远程修报错
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/ios-unsigned.yml
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "要编译的分支或标签 (留空 = 默认分支)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Phone app (iOS, unsigned)
+    runs-on: macos-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+        working-directory: mobile
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          node -v
+          pod --version
+
+      - run: npm ci --no-fund --no-audit --prefix ../link
+      - run: npm ci --no-fund --no-audit
+
+      # ios/ 工程不在仓库里, 由 Expo 生成
+      - name: Generate the iOS project
+        run: npx expo prebuild --platform ios --no-install
+
+      # App 用了面容 ID (src/team/gate.ts), 但 app.json 没声明用途说明;
+      # iOS 上缺这一项时调用面容 ID 会直接闪退, 这里补上。
+      - name: Add the Face ID usage text
+        run: |
+          PLIST="$(ls ios/*/Info.plist | head -1)"
+          echo "plist=$PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :NSFaceIDUsageDescription string "DS Bot uses Face ID to unlock the app."' "$PLIST" \
+            || /usr/libexec/PlistBuddy -c 'Set :NSFaceIDUsageDescription "DS Bot uses Face ID to unlock the app."' "$PLIST"
+
+      - name: Pod install
+        working-directory: mobile/ios
+        run: pod install
+
+      - name: Build (no code signing)
+        working-directory: mobile/ios
+        run: |
+          set -o pipefail
+          WORKSPACE="$(ls -d *.xcworkspace | head -1)"
+          SCHEME="${WORKSPACE%.xcworkspace}"
+          echo "workspace=$WORKSPACE scheme=$SCHEME"
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee xcodebuild.log | tail -n 300
+
+      - name: Package the IPA
+        working-directory: mobile/ios
+        run: |
+          APP="$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)"
+          test -n "$APP" || { echo "::error::没有找到 .app"; exit 1; }
+          echo "app=$APP"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist"
+          test -f "$APP/main.jsbundle" || echo "::warning::包里没有 main.jsbundle, App 可能打不开"
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry DS-Bot-unsigned.ipa Payload
+          ls -lh DS-Bot-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DS-Bot-unsigned-ipa
+          path: mobile/ios/DS-Bot-unsigned.ipa
+          if-no-files-found: error
+
+      # 失败时把完整日志留下来, 方便排错
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: xcodebuild-log
+          path: mobile/ios/xcodebuild.log
+          if-no-files-found: ignore
