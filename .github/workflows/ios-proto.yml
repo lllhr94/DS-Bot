@@ -1,0 +1,77 @@
+# 手感样机: 一个独立的 SwiftUI 小 App (proto-ios/), 不连电脑, 只用来在真机上试质感和动效。
+# 产出未签名的 IPA, 签名在手机上的签名工具里做。
+
+name: iOS feel prototype
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - proto-ios/**
+      - .github/workflows/ios-proto.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Feel prototype (iOS, unsigned)
+    runs-on: macos-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+        working-directory: proto-ios
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i iphoneos || true
+
+      - name: Generate the Xcode project
+        run: |
+          which xcodegen || brew install xcodegen
+          xcodegen generate
+
+      - name: Build (no code signing)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project BotProto.xcodeproj \
+            -scheme BotProto \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee xcodebuild.log | grep -E "error|warning: unre|BUILD|\.swift:[0-9]+" | tail -n 120
+
+      - name: Package the IPA
+        run: |
+          APP="$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)"
+          test -n "$APP" || { echo "::error::没有找到 .app"; exit 1; }
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist"
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry BotProto-unsigned.ipa Payload
+          ls -lh BotProto-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BotProto-unsigned-ipa
+          path: proto-ios/BotProto-unsigned.ipa
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: xcodebuild-log
+          path: proto-ios/xcodebuild.log
+          if-no-files-found: ignore
