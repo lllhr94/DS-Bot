@@ -7,6 +7,7 @@ struct HomeView: View {
     @State private var shown = false
     @State private var poked: String?
     @State private var opened: BotInfo?
+    @State private var approving: Approval?
     @Namespace private var zoom
 
     var body: some View {
@@ -25,6 +26,11 @@ struct HomeView: View {
                 }
             }
             .padding(.bottom, 40)
+            // Here, not on the slip: the slip leaves the page when its last approval is answered.
+            .fullScreenCover(item: $approving) { approval in
+                ApproveView(approval: approval, team: team)
+                    .navigationTransition(.zoom(sourceID: "slip", in: zoom))
+            }
         }
         .scrollIndicators(.hidden)
         .fullScreenCover(item: $opened) { bot in
@@ -107,7 +113,11 @@ struct HomeView: View {
     private var slip: some View {
         let first = team.approvals[0]
         let who = team.bots.first { $0.id == first.botId }?.name ?? "Bot"
-        return VStack(alignment: .leading, spacing: 10) {
+        return Button {
+            Haptics.grab()
+            approving = first
+        } label: {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("审 批 单")
                     .font(.system(size: 12, weight: .bold))
@@ -120,19 +130,26 @@ struct HomeView: View {
             Text("\(who)在等你点头")
                 .font(.system(size: 20, weight: .heavy))
                 .foregroundStyle(Color(hex: 0x0B0B0F))
-            if let reason = first.reason ?? first.tool, !reason.isEmpty {
+            if let reason = first.tool ?? first.reason, !reason.isEmpty {
                 Text(reason)
                     .font(.system(size: 15))
                     .foregroundStyle(Color(hex: 0x2A2A33))
                     .lineLimit(2)
             }
-            Text("在手机上批准，下一版接上。")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Color(hex: 0x4A4A55))
+            HStack(spacing: 4) {
+                Text("点开看看")
+                Image(systemName: "chevron.right").font(.system(size: 11, weight: .bold))
+            }
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(Color(hex: 0x1756CC))
         }
         .padding(.init(top: 22, leading: 18, bottom: 16, trailing: 18))
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(SlipShape().fill(.white))
+        .contentShape(Rectangle())
+        .matchedTransitionSource(id: "slip", in: zoom)
+        }
+        .buttonStyle(.plain)
         .shadow(color: Color(hex: 0x141432).opacity(0.14), radius: 18, y: 16)
         .rotationEffect(.degrees(-1.2))
         .padding(.horizontal, 22)

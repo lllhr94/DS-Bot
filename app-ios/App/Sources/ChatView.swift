@@ -6,6 +6,7 @@ struct ChatView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var draft = ""
     @FocusState private var typing: Bool
+    @State private var approving: Approval?
 
     init(bot: BotInfo, team: TeamModel) {
         self.team = team
@@ -241,6 +242,36 @@ struct ChatView: View {
 
     private var composer: some View {
         VStack(spacing: 8) {
+            if let waiting = team.approvals.first(where: { $0.botId == chat.bot.id }) {
+                Button {
+                    Haptics.grab()
+                    typing = false
+                    approving = waiting
+                } label: {
+                    HStack(spacing: 10) {
+                        Text("审 批 单")
+                            .font(.system(size: 11, weight: .bold))
+                            .tracking(1.5)
+                            .foregroundStyle(Color(hex: 0x4A4A55))
+                        Text(waiting.tool ?? waiting.reason ?? "等你点头")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Color(hex: 0x0B0B0F))
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(Color(hex: 0x1756CC))
+                    }
+                    .padding(.init(top: 16, leading: 16, bottom: 12, trailing: 14))
+                    .background(SlipShape().fill(.white))
+                    .shadow(color: Color(hex: 0x141432).opacity(0.14), radius: 12, y: 8)
+                    .rotationEffect(.degrees(-0.8))
+                    .padding(.horizontal, 6)
+                }
+                .buttonStyle(.plain)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .accessibilityLabel("\(bot.name)在等你批准")
+            }
             if let error = chat.error {
                 Text(error)
                     .font(.system(size: 13, weight: .semibold))
@@ -296,6 +327,10 @@ struct ChatView: View {
         .padding(.top, 6)
         .padding(.bottom, 8)
         .animation(.smooth, value: chat.error)
+        .animation(.spring(response: 0.45, dampingFraction: 0.75), value: team.approvals)
+        .fullScreenCover(item: $approving) { approval in
+            ApproveView(approval: approval, team: team)
+        }
     }
 }
 

@@ -27,11 +27,22 @@ struct RoomInfo: Decodable, Identifiable, Equatable {
 }
 
 struct Approval: Decodable, Identifiable, Equatable {
+    struct Detail: Decodable, Equatable {
+        var text: String?
+        var code: String?
+    }
+
     let id: String
     var botId: String?
     var roomId: String?
+    var sessionId: String?
     var tool: String?
     var reason: String?
+    var detail: Detail?
+    /// When it was asked, in milliseconds.
+    var at: Double?
+    /// False when only the computer can answer it.
+    var answerable: Bool?
 }
 
 struct Work: Decodable, Equatable {
@@ -138,6 +149,16 @@ final class TeamModel: ObservableObject {
             throw LinkError(failure?["code"] as? String ?? "HOST_ERROR", failure?["message"] as? String ?? "电脑报告了一个错误。")
         }
         return answer["value"] as? [String: Any] ?? [:]
+    }
+
+    /// Answers an approval: lets the Bot go ahead once, or turns it down.
+    func answer(_ approval: Approval, allow: Bool) async throws {
+        if phase == .demo {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            work.approvals?.removeAll { $0.id == approval.id }
+            return
+        }
+        _ = try await call("approval-answer", ["id": approval.id, "choice": allow ? "allow" : "reject"])
     }
 
     func stop() {
@@ -285,7 +306,10 @@ final class TeamModel: ObservableObject {
         rooms = [RoomInfo(id: "launch", name: "上线准备", preview: "调研在查资料", members: ["chief", "scout"])]
         work = Work(
             bots: ["scout": Work.Doing(tool: "browser")],
-            approvals: [Approval(id: "a1", botId: "ops", tool: "shell", reason: "重启一个服务")]
+            approvals: [
+                Approval(id: "a1", botId: "ops", tool: "重启一个服务", reason: "网站响应变慢了，重启后应该恢复。", detail: .init(code: "systemctl restart nginx"), at: Date().timeIntervalSince1970 * 1000, answerable: true),
+                Approval(id: "a2", botId: "writer", tool: "把周报发到团队邮箱", reason: "周报已经写完，等你确认后发出。", at: Date().timeIntervalSince1970 * 1000, answerable: true),
+            ]
         )
         phase = .demo
     }
