@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -63,6 +63,19 @@ jobs:
           name: BotTeam-unsigned-ipa
           path: app-ios/App/BotTeam-unsigned.ipa
           if-no-files-found: error
+
+      # A plain download link on the Releases page, so the IPA can be fetched from a phone.
+      - name: Publish the IPA to the app-latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REPO="${{ github.repository }}"
+          gh release view app-latest --repo "$REPO" >/dev/null 2>&1 || \
+            gh release create app-latest --repo "$REPO" --prerelease \
+              --title "Bot 团队 (未签名 IPA，最新构建)" \
+              --notes "每次构建自动更新。下载 BotTeam-unsigned.ipa，用签名工具签名后安装。"
+          gh release upload app-latest BotTeam-unsigned.ipa --repo "$REPO" --clobber
+          gh release edit app-latest --repo "$REPO" --notes "最新构建：${{ github.sha }}。下载 BotTeam-unsigned.ipa，用签名工具签名后安装。"
 
       - uses: actions/upload-artifact@v4
         if: failure()
