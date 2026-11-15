@@ -20,8 +20,16 @@ struct ChatLine: Identifiable, Equatable {
 final class ChatModel: ObservableObject {
     @Published private(set) var lines: [ChatLine] = []
     @Published private(set) var pending: [ChatLine] = []
-    /// The reply as it is being written.
+    /// The part of the reply being written that is on screen so far.
     @Published private(set) var streaming = ""
+    /// The reply that just finished: the row that took over from the streaming one.
+    @Published private(set) var fresh: Fresh?
+
+    struct Fresh: Equatable {
+        var id: String
+        /// How many characters are out so far; nil once the whole reply is.
+        var shown: Int?
+    }
     @Published private(set) var loaded = false
     @Published private(set) var demoWorking = false
     @Published var error: String?
@@ -35,6 +43,11 @@ final class ChatModel: ObservableObject {
     private var reading = false
     private var again = false
     private var attempts: [(id: String, text: String, done: Bool)] = []
+    /// Everything received of the reply being written; `streaming` follows it at an even pace.
+    private var target = ""
+    private var shown = 0
+    private var finalCount = 0
+    private var typing: Task<Void, Never>?
     /// For each sent message, the rows the chat held when the computer took it.
     private var known: [String: Set<String>] = [:]
 
@@ -68,6 +81,40 @@ final class ChatModel: ObservableObject {
         poll?.cancel()
         poll = nil
         demoReply?.cancel()
+        typing?.cancel()
+        typing = nil
+    }
+
+    // MARK: Even pace
+
+    /// Text arrives in bursts; this lets it out a little each frame, faster when more is waiting.
+    private func type() {
+        guard typing == nil else { return }
+        typing = Task { [weak self] in
+            while !Task.isCancelled, let self, self.step() {
+                try? await Task.sleep(nanoseconds: 16_000_000)
+            }
+            self?.typing = nil
+        }
+    }
+
+    /// Lets a few more characters out. False when there is nothing left to let out.
+    private func step() -> Bool {
+        if let settling = fresh, settling.shown != nil {
+            guard shown < finalCount else {
+                withAnimation(.easeOut(duration: 0.45)) { fresh?.shown = nil }
+                return false
+            }
+            shown = min(finalCount, shown + max(1, (finalCount - shown) / 10))
+            fresh?.shown = shown
+            return true
+        }
+        let goal = target.count
+        if shown > goal { shown = goal }
+        guard shown < goal else { return false }
+        shown = min(goal, shown + max(1, (goal - shown) / 10))
+        streaming = String(target.prefix(shown))
+        return true
     }
 
     // MARK: Reading
@@ -96,29 +143,41 @@ final class ChatModel: ObservableObject {
 
     private func apply(_ next: [ChatLine]) {
         let hadStream = !streaming.isEmpty
+        let lastReply = lines.last(where: { $0.kind == .bot })?.id
+        let reply = next.last(where: { $0.kind == .bot })
+        let newReply = loaded && reply != nil && reply?.id != lastReply
         // A finished reply stays on screen until the chat holds it, so nothing blinks.
-        attempts.removeAll { $0.done }
-        let nextStream = attempts.map(\.text).joined()
-        let shown = pending.filter { local in
+        if newReply { attempts.removeAll { $0.done } }
+        target = attempts.map(\.text).joined()
+        var nextStream = streaming
+        var nextFresh = fresh
+        if hadStream, target.isEmpty, newReply, let reply {
+            // The written-out row takes over exactly where the streaming one stood.
+            finalCount = reply.text.count
+            nextFresh = Fresh(id: reply.id, shown: shown < finalCount ? shown : nil)
+            nextStream = ""
+        } else if target.isEmpty {
+            nextStream = ""
+        }
+        let shownBack = pending.filter { local in
             guard let before = known[local.id] else { return false }
             return next.contains { $0.kind == .user && !before.contains($0.id) && Self.same($0.text, local.text) }
         }
-        let nextPending = pending.filter { local in !shown.contains { $0.id == local.id } }
-        for local in shown { known[local.id] = nil }
+        let nextPending = pending.filter { local in !shownBack.contains { $0.id == local.id } }
+        for local in shownBack { known[local.id] = nil }
         let grew = next.count + nextPending.count > lines.count + pending.count
-        let lastReply = lines.last(where: { $0.kind == .bot })?.id
-        let newReply = loaded && next.last?.kind == .bot && next.last?.id != lastReply
         let change = {
             if self.lines != next { self.lines = next }
             if self.pending != nextPending { self.pending = nextPending }
             if self.streaming != nextStream { self.streaming = nextStream }
+            if self.fresh != nextFresh { self.fresh = nextFresh }
         }
-        // The written-out reply takes the place of the streaming one in a single frame.
-        if loaded && grew && !hadStream && shown.isEmpty {
+        if loaded && grew && !hadStream && shownBack.isEmpty {
             withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) { change() }
         } else {
             change()
         }
+        if nextFresh?.shown != nil { type() }
         if newReply { Haptics.tick(0.6) }
     }
 
@@ -175,6 +234,7 @@ final class ChatModel: ObservableObject {
             if phase == "start" {
                 attempts.removeAll { $0.id == id || $0.done }
                 attempts.append((id, "", false))
+                if attempts.count == 1 { shown = 0; fresh = nil }
             } else if let text = data["text"] as? String {
                 if let index = attempts.firstIndex(where: { $0.id == id }) {
                     attempts[index].text += text
@@ -190,7 +250,9 @@ final class ChatModel: ObservableObject {
                     self?.dropFinished()
                 }
             }
-            streaming = attempts.map(\.text).joined()
+            target = attempts.map(\.text).joined()
+            if fresh?.shown != nil { fresh?.shown = nil }
+            type()
         default:
             break
         }
@@ -199,7 +261,8 @@ final class ChatModel: ObservableObject {
     private func dropFinished() {
         guard attempts.contains(where: { $0.done }) else { return }
         attempts.removeAll { $0.done }
-        streaming = attempts.map(\.text).joined()
+        target = attempts.map(\.text).joined()
+        if target.isEmpty { streaming = "" }
     }
 
     // MARK: Sending
@@ -265,15 +328,30 @@ final class ChatModel: ObservableObject {
             self?.demoWorking = true
             try? await Task.sleep(nanoseconds: 900_000_000)
             let reply = "这是演示团队，我还没有连到真的电脑。扫码连上你的电脑之后，这里就是 Bot 真正的回答：它会一边想一边写，像现在这样一个字一个字出来。"
-            for character in reply {
-                if Task.isCancelled { break }
-                self?.streaming.append(character)
-                try? await Task.sleep(nanoseconds: 28_000_000)
+            self?.shown = 0
+            self?.fresh = nil
+            // Bursts, the way a real computer sends them.
+            var rest = Substring(reply)
+            while !rest.isEmpty, !Task.isCancelled {
+                let burst = rest.prefix(Int.random(in: 4...14))
+                rest = rest.dropFirst(burst.count)
+                self?.target.append(contentsOf: burst)
+                self?.type()
+                try? await Task.sleep(nanoseconds: 260_000_000)
             }
             guard let self else { return }
-            let said = self.streaming
-            self.streaming = ""
-            if !said.isEmpty { self.lines.append(ChatLine(id: "demo-\(UUID().uuidString)", kind: .bot, text: said)) }
+            let said = Task.isCancelled ? self.streaming : self.target
+            self.target = ""
+            if said.isEmpty {
+                self.streaming = ""
+            } else {
+                let line = ChatLine(id: "demo-\(UUID().uuidString)", kind: .bot, text: said)
+                self.finalCount = said.count
+                self.lines.append(line)
+                self.fresh = Fresh(id: line.id, shown: self.shown < said.count ? self.shown : nil)
+                self.streaming = ""
+                self.type()
+            }
             self.demoWorking = false
             Haptics.tick(0.6)
         }

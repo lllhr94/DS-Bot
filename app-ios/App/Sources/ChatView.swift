@@ -17,7 +17,8 @@ struct ChatView: View {
     private var tone: UInt32 { BadgeLook.tone(named: bot.color) }
     private var working: Bool { chat.demoWorking || team.work.bots?[bot.id] != nil || !chat.streaming.isEmpty }
     /// Changes whenever the chat grows, so the view can follow the newest row.
-    private var growth: Int { chat.lines.count &+ chat.pending.count &* 1000 &+ chat.streaming.count &* 7 }
+    private var rows: Int { chat.lines.count &+ chat.pending.count &* 1000 }
+    private var flow: Int { chat.streaming.count &+ (chat.fresh?.shown ?? 0) }
 
     var body: some View {
         ZStack {
@@ -31,7 +32,10 @@ struct ChatView: View {
                         ForEach(chat.lines) { line in row(line) }
                         ForEach(chat.pending) { line in row(line) }
                         if !chat.streaming.isEmpty {
-                            StreamingBubble(text: chat.streaming)
+                            MessageText(text: chat.streaming, tail: 1)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 12)
+                                .background(BotBubble())
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.trailing, 44)
                         } else if working && chat.lines.last?.live != true {
@@ -49,9 +53,11 @@ struct ChatView: View {
                 .defaultScrollAnchor(.bottom)
                 .scrollDismissesKeyboard(.interactively)
                 .scrollIndicators(.hidden)
-                .onChange(of: growth) {
+                .onChange(of: rows) {
                     withAnimation(.smooth(duration: 0.25)) { proxy.scrollTo("end", anchor: .bottom) }
                 }
+                // While a reply flows the view just stays on its last line; animating every frame would stutter.
+                .onChange(of: flow) { proxy.scrollTo("end", anchor: .bottom) }
                 .onChange(of: typing) {
                     guard typing else { return }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
@@ -160,7 +166,7 @@ struct ChatView: View {
                 removal: .opacity
             ))
         case .bot:
-            MessageText(text: line.text)
+            botText(line)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
                 .background(BotBubble())
@@ -198,6 +204,16 @@ struct ChatView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 2)
                 .transition(.opacity)
+        }
+    }
+
+    /// The reply that just finished keeps flowing out where the streaming row stopped, then its tail clears.
+    @ViewBuilder
+    private func botText(_ line: ChatLine) -> some View {
+        if let fresh = chat.fresh, fresh.id == line.id {
+            MessageText(text: fresh.shown.map { String(line.text.prefix($0)) } ?? line.text, tail: fresh.shown == nil ? 0 : 1)
+        } else {
+            MessageText(text: line.text).equatable()
         }
     }
 
@@ -295,22 +311,34 @@ private struct BotBubble: View {
 }
 
 /// A Bot's message: plain paragraphs with inline Markdown, and code in its own boxes.
-struct MessageText: View {
+struct MessageText: View, Equatable {
     let text: String
+    /// Above 0 while the text is still arriving: how strongly its newest characters fade in.
+    var tail: Double?
 
     private enum Block { case prose(AttributedString), code(String) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+            let parts = blocks
+            ForEach(Array(parts.enumerated()), id: \.offset) { index, block in
                 switch block {
                 case .prose(let prose):
-                    Text(prose)
-                        .font(.system(size: 17))
-                        .lineSpacing(4)
-                        .foregroundStyle(Color(hex: 0x0B0B0F))
-                        .tint(Color(hex: 0x1756CC))
-                        .textSelection(.enabled)
+                    if let tail {
+                        Text(prose)
+                            .font(.system(size: 17))
+                            .lineSpacing(4)
+                            .foregroundStyle(Color(hex: 0x0B0B0F))
+                            .tint(Color(hex: 0x1756CC))
+                            .textRenderer(TailRenderer(strength: index == parts.count - 1 ? tail : 0))
+                    } else {
+                        Text(prose)
+                            .font(.system(size: 17))
+                            .lineSpacing(4)
+                            .foregroundStyle(Color(hex: 0x0B0B0F))
+                            .tint(Color(hex: 0x1756CC))
+                            .textSelection(.enabled)
+                    }
                 case .code(let code):
                     ScrollView(.horizontal) {
                         Text(code)
@@ -367,38 +395,15 @@ struct MessageText: View {
     }
 }
 
-/// The reply while it is being written: the newest characters arrive soft and colored, then settle.
-private struct StreamingBubble: View {
-    let text: String
-
-    var body: some View {
-        Text(Self.tinted(text))
-            .font(.system(size: 17))
-            .lineSpacing(4)
-            .foregroundStyle(Color(hex: 0x0B0B0F))
-            .textRenderer(TailRenderer())
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(BotBubble())
-    }
-
-    private static func tinted(_ text: String) -> AttributedString {
-        var out = AttributedString(text)
-        var end = out.endIndex
-        for hex in [0xE07A2E, 0xC2417A, 0x7A3FD0] as [UInt32] {
-            let left = out.characters.distance(from: out.startIndex, to: end)
-            guard left > 0 else { break }
-            let start = out.characters.index(end, offsetBy: -min(4, left))
-            out[start..<end].foregroundColor = Color(hex: hex)
-            end = start
-        }
-        return out
-    }
-}
-
-/// Blurs and fades the last glyphs of the text, most at the very end.
+/// Fades the newest glyphs in: the last one is the faintest. `strength` 0 draws the text as it is.
 private struct TailRenderer: TextRenderer {
-    var tail = 12
+    var strength: Double
+    var tail = 10
+
+    var animatableData: Double {
+        get { strength }
+        set { strength = newValue }
+    }
 
     func draw(layout: Text.Layout, in context: inout GraphicsContext) {
         var slices: [Text.Layout.RunSlice] = []
@@ -410,14 +415,13 @@ private struct TailRenderer: TextRenderer {
         let total = slices.count
         for (index, slice) in slices.enumerated() {
             let fromEnd = total - 1 - index
-            if fromEnd >= tail {
+            if fromEnd >= tail || strength <= 0 {
                 context.draw(slice)
                 continue
             }
             let depth = 1 - Double(fromEnd) / Double(tail)
             var soft = context
-            soft.addFilter(.blur(radius: depth * 3.5))
-            soft.opacity = 1 - depth * 0.55
+            soft.opacity = 1 - depth * 0.9 * strength
             soft.draw(slice)
         }
     }
