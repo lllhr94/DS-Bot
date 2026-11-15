@@ -42,9 +42,9 @@ struct ApproveView: View {
                     .opacity(0.8)
                     .shadow(color: Color(hex: 0x141432).opacity(0.10), radius: 14, y: 14)
                 slip
-                    .scaleEffect(1 - 0.02 * press)
-                    .rotationEffect(.degrees(-4 - 1.4 * press))
-                    .offset(y: 8 * press)
+                    .scaleEffect(1 - 0.035 * press)
+                    .rotationEffect(.degrees(-4 - 2.0 * press))
+                    .offset(y: 12 * press)
             }
             .scaleEffect(shown ? 1 : 0.9)
             .opacity(shown ? 1 : 0)
@@ -149,7 +149,7 @@ struct ApproveView: View {
     private func tick(_ step: Int) {
         if step != lastTick {
             lastTick = step
-            Haptics.tick()
+            Haptics.tick(0.45 + 0.07 * CGFloat(step))
         }
     }
 
@@ -157,10 +157,9 @@ struct ApproveView: View {
         // The stamp falls, lands with a thud, and the slip gives under it.
         withAnimation(.spring(response: 0.24, dampingFraction: 0.62)) { stamped = true }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.11) {
-            Haptics.heavy()
+            Haptics.thud()
             withAnimation(.spring(response: 0.1, dampingFraction: 0.7)) { press = 1 }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.09) {
-                Haptics.rigid()
                 withAnimation(.spring(response: 0.55, dampingFraction: 0.38)) { press = 0 }
             }
         }
@@ -239,9 +238,11 @@ private struct SlideTrack: View {
                             }
                             .onEnded { _ in
                                 if progress > 0.86 {
+                                    Haptics.lock()
                                     withAnimation(.spring(response: 0.2, dampingFraction: 0.8)) { progress = 1 }
                                     onDone()
                                 } else {
+                                    Haptics.tick(0.5)
                                     withAnimation(.spring(response: 0.42, dampingFraction: 0.6)) { progress = 0 }
                                 }
                             }

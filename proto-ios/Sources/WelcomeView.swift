@@ -126,13 +126,13 @@ private struct HangingBadge: View {
                 let now = Date()
                 let dt = max(now.timeIntervalSince(lastTime), 1.0 / 120.0)
                 let velocity = value.translation == .zero ? 0 : (next - lastAngle) / dt
-                if value.translation == .zero { Haptics.light() }
+                if value.translation == .zero { Haptics.grab() }
                 lastAngle = next
                 lastTime = now
                 onDrag(next, velocity)
             }
             .onEnded { _ in
-                Haptics.tick()
+                Haptics.tick(0.9)
                 onRelease()
             }
     }
