@@ -1,0 +1,50 @@
+# Checks the Swift link (app-ios/DSLink) against the project's own computer-side code:
+# a real Relay Server and host are started here, and the Swift tests pair and talk with them.
+
+name: iOS link interop
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - app-ios/**
+      - link/**
+      - .github/workflows/ios-link-test.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  interop:
+    name: Swift link against the real host
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: npm ci --no-fund --no-audit --prefix link
+
+      - name: Start the Relay Server and a computer
+        run: |
+          node app-ios/interop/harness.mjs "$RUNNER_TEMP/pairing.txt" > "$RUNNER_TEMP/harness.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            test -s "$RUNNER_TEMP/pairing.txt" && break
+            sleep 0.5
+          done
+          cat "$RUNNER_TEMP/harness.log"
+          test -s "$RUNNER_TEMP/pairing.txt"
+
+      - name: Swift tests
+        run: |
+          set -o pipefail
+          export DSLINK_PAIRING_URI="$(cat "$RUNNER_TEMP/pairing.txt")"
+          swift test --package-path app-ios/DSLink 2>&1 | tail -n 80
+
+      - name: Harness log
+        if: always()
+        run: cat "$RUNNER_TEMP/harness.log" || true
