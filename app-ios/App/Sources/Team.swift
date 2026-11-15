@@ -80,6 +80,8 @@ final class TeamModel: ObservableObject {
     private var loop: Task<Void, Never>?
     private var refreshing = false
     private var refreshAgain = false
+    private var client: LinkClient?
+    private var feeds: [UUID: @MainActor (String, [String: Any]) -> Void] = [:]
 
     var approvals: [Approval] { work.approvals ?? [] }
 
@@ -116,9 +118,32 @@ final class TeamModel: ObservableObject {
         }
     }
 
+    /// Hears every event the computer sends (`message`, `stream`, …) until `unlisten`.
+    func listen(_ handler: @escaping @MainActor (String, [String: Any]) -> Void) -> UUID {
+        let id = UUID()
+        feeds[id] = handler
+        return id
+    }
+
+    func unlisten(_ id: UUID) { feeds[id] = nil }
+
+    /// Runs one endpoint on the computer and returns its value.
+    func call(_ endpoint: String, _ payload: [String: Any] = [:]) async throws -> [String: Any] {
+        guard let client else { throw LinkError("link/offline", "还没连上电脑。") }
+        let params = try JSONSerialization.data(withJSONObject: ["endpoint": endpoint, "payload": payload])
+        let data = try await client.call("bot", params: params)
+        guard let answer = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
+        guard (answer["ok"] as? Bool) == true else {
+            let failure = answer["error"] as? [String: Any]
+            throw LinkError(failure?["code"] as? String ?? "HOST_ERROR", failure?["message"] as? String ?? "电脑报告了一个错误。")
+        }
+        return answer["value"] as? [String: Any] ?? [:]
+    }
+
     func stop() {
         loop?.cancel()
         loop = nil
+        client = nil
         raw = [:]
         revision = -1
         liveKey = nil
@@ -143,11 +168,12 @@ final class TeamModel: ObservableObject {
         raw = [:]
         liveKey = nil
         try await refresh(client)
+        self.client = client
+        defer { if self.client === client { self.client = nil } }
         withAnimation(.smooth) { phase = .online }
         await withTaskGroup(of: Void.self) { group in
-            // Every event from the computer means something moved: read the team again.
             group.addTask { [weak self] in
-                for await _ in client.events { await self?.refreshSoon(client) }
+                for await event in client.events { await self?.hear(event, from: client) }
             }
             // A slow poll stays as the fallback.
             group.addTask { [weak self] in
@@ -160,6 +186,16 @@ final class TeamModel: ObservableObject {
             // The event stream ends when the connection does.
             _ = await group.next()
             group.cancelAll()
+        }
+    }
+
+    /// Passes an event to the open screens. Only team changes read the team again, and
+    /// never in line: a reply streaming in must not wait behind a team read.
+    private func hear(_ event: LinkEvent, from client: LinkClient) {
+        let data = (try? JSONSerialization.jsonObject(with: event.data)) as? [String: Any] ?? [:]
+        for handler in feeds.values { handler(event.name, data) }
+        if event.name != "stream" {
+            Task { [weak self] in await self?.refreshSoon(client) }
         }
     }
 

@@ -6,6 +6,8 @@ struct HomeView: View {
 
     @State private var shown = false
     @State private var poked: String?
+    @State private var opened: BotInfo?
+    @Namespace private var zoom
 
     var body: some View {
         ScrollView {
@@ -25,6 +27,10 @@ struct HomeView: View {
             .padding(.bottom, 40)
         }
         .scrollIndicators(.hidden)
+        .fullScreenCover(item: $opened) { bot in
+            ChatView(bot: bot, team: team)
+                .navigationTransition(.zoom(sourceID: bot.id, in: zoom))
+        }
         .onAppear {
             Haptics.prepare()
             withAnimation(.spring(response: 0.7, dampingFraction: 0.72).delay(0.15)) { shown = true }
@@ -169,13 +175,15 @@ struct HomeView: View {
                         Button {
                             Haptics.grab()
                             withAnimation(.spring(response: 0.22, dampingFraction: 0.5)) { poked = bot.id }
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
                                 withAnimation(.spring(response: 0.5, dampingFraction: 0.45)) { poked = nil }
+                                opened = bot
                             }
                         } label: {
                             BadgeCard(look: look)
                                 .scaleEffect(0.86)
                                 .frame(width: 134, height: 180)
+                                .matchedTransitionSource(id: bot.id, in: zoom)
                         }
                         .buttonStyle(.plain)
                         .rotationEffect(.degrees(poked == bot.id ? tilt * 3 : tilt))
