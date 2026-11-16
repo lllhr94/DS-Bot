@@ -15,6 +15,16 @@ struct BotInfo: Decodable, Identifiable, Equatable {
     var preview: String?
     var lastAt: Double?
     var blocked: Blocked?
+    /// The model it thinks with, as the computer names it.
+    var model: String?
+}
+
+/// A model the computer can give a Bot.
+struct ModelInfo: Decodable, Equatable, Identifiable {
+    let ref: String
+    var name: String?
+    var providerName: String?
+    var id: String { ref }
 }
 
 struct RoomInfo: Decodable, Identifiable, Equatable {
@@ -96,6 +106,7 @@ final class TeamModel: ObservableObject {
     @Published private(set) var waitingForAnswer: Set<String> = []
     /// Open questions, by the chat they were asked in.
     @Published private(set) var questions: [String: Question] = [:]
+    @Published private(set) var models: [ModelInfo] = []
     @Published private(set) var hostName = ""
 
     private var raw: [String: Any] = [:]
@@ -192,7 +203,7 @@ final class TeamModel: ObservableObject {
     }
 
     /// Saves a Bot's name, role and color; `id` nil makes a new Bot.
-    func saveBot(id: String?, name: String, role: String, color: String) async throws {
+    func saveBot(id: String?, name: String, role: String, color: String, model: String? = nil) async throws {
         if phase == .demo {
             if let index = bots.firstIndex(where: { $0.id == id }) {
                 bots[index].name = name
@@ -205,6 +216,7 @@ final class TeamModel: ObservableObject {
         }
         var payload: [String: Any] = ["name": name, "role": role, "color": color]
         if let id { payload["id"] = id }
+        if let model { payload["model"] = model }
         _ = try await call(id == nil ? "create-bot" : "update-bot", payload, timeout: 60)
         if let client { await refreshSoon(client) }
     }
@@ -341,6 +353,8 @@ final class TeamModel: ObservableObject {
             .filter { $0.hidden != true }
         let nextWork = Loose.decode(Work.self, raw["work"]) ?? Work()
         let nextWaiting = Set((raw["questions"] as? [String: Any] ?? [:]).keys)
+        let nextModels = ((raw["models"] as? [Any]) ?? []).compactMap { Loose.decode(ModelInfo.self, $0) }
+        if nextModels != models { models = nextModels }
         let nextQuestions = (raw["questions"] as? [String: Any] ?? [:]).compactMapValues { Loose.decode(Question.self, $0) }
         withAnimation(.smooth(duration: 0.35)) {
             if nextBots != bots { bots = nextBots }

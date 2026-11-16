@@ -29,6 +29,7 @@ struct HomeView: View {
                 if !team.approvals.isEmpty { slip.padding(.top, 22) }
                 section("Bot")
                 badges
+                recent
                 if !team.rooms.isEmpty {
                     section("群聊")
                     VStack(spacing: 10) {
@@ -254,6 +255,71 @@ struct HomeView: View {
     }
 
     // MARK: Rooms
+
+    /// What each Bot said last, newest first.
+    @ViewBuilder
+    private var recent: some View {
+        let said = team.bots
+            .filter { $0.preview?.isEmpty == false }
+            .sorted { ($0.lastAt ?? 0) > ($1.lastAt ?? 0) }
+            .prefix(5)
+        if !said.isEmpty {
+            section("最近")
+            VStack(spacing: 0) {
+                ForEach(Array(said.enumerated()), id: \.element.id) { index, bot in
+                    Button {
+                        Haptics.grab()
+                        opened = bot
+                    } label: {
+                        HStack(spacing: 12) {
+                            Face(tone: BadgeLook.tone(named: bot.color), size: 38, mood: asleep ? .sleepy : Mood.of(team.status(of: bot).text), ears: Ears.of(bot.name))
+                                .padding(.top, 8)
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack {
+                                    Text(bot.name)
+                                        .font(.system(size: 16, weight: .bold))
+                                        .foregroundStyle(Color(hex: 0x0B0B0F))
+                                        .lineLimit(1)
+                                    Spacer(minLength: 8)
+                                    if let at = bot.lastAt, at > 0 {
+                                        Text(Self.ago(at))
+                                            .font(.system(size: 12, weight: .medium))
+                                            .foregroundStyle(Color(hex: 0x4A4A55))
+                                    }
+                                }
+                                Text(bot.preview ?? "")
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(Color(hex: 0x3A3A45))
+                                    .lineLimit(2)
+                                    .multilineTextAlignment(.leading)
+                            }
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    if index < said.count - 1 {
+                        Rectangle().fill(Color.black.opacity(0.06)).frame(height: 1).padding(.leading, 64)
+                    }
+                }
+            }
+            .glassEffect(.regular, in: .rect(cornerRadius: 24))
+            .padding(.horizontal, 20)
+        }
+    }
+
+    /// How long ago, in a few words.
+    private static func ago(_ milliseconds: Double) -> String {
+        let seconds = Date().timeIntervalSince1970 - milliseconds / 1000
+        if seconds < 60 { return "刚刚" }
+        if seconds < 3600 { return "\(Int(seconds / 60)) 分钟前" }
+        if seconds < 86400 { return "\(Int(seconds / 3600)) 小时前" }
+        if seconds < 86400 * 7 { return "\(Int(seconds / 86400)) 天前" }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "M月d日"
+        return formatter.string(from: Date(timeIntervalSince1970: milliseconds / 1000))
+    }
 
     private func roomRow(_ room: RoomInfo) -> some View {
         Button {

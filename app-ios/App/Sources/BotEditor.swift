@@ -10,6 +10,7 @@ struct BotEditor: View {
     @State private var name: String
     @State private var role: String
     @State private var color: String
+    @State private var model: String?
     @State private var busy = false
     @State private var error: String?
     @State private var confirmingDelete = false
@@ -77,6 +78,36 @@ struct BotEditor: View {
                             .padding(.horizontal, 16)
                             .frame(height: 52)
                             .glassEffect(.regular, in: .rect(cornerRadius: 18))
+                        if !team.models.isEmpty {
+                            label("用哪个模型").padding(.top, 6)
+                            Menu {
+                                ForEach(team.models) { item in
+                                    Button {
+                                        model = item.ref
+                                    } label: {
+                                        if (model ?? bot?.model) == item.ref {
+                                            Label(Self.title(item), systemImage: "checkmark")
+                                        } else {
+                                            Text(Self.title(item))
+                                        }
+                                    }
+                                }
+                            } label: {
+                                HStack {
+                                    Text(team.models.first { $0.ref == (model ?? bot?.model) }.map(Self.title) ?? (bot == nil ? "让电脑决定" : (bot?.model ?? "让电脑决定")))
+                                        .font(.system(size: 17))
+                                        .lineLimit(1)
+                                    Spacer()
+                                    Image(systemName: "chevron.up.chevron.down")
+                                        .font(.system(size: 13, weight: .bold))
+                                        .foregroundStyle(Color(hex: 0x4A4A55))
+                                }
+                                .padding(.horizontal, 16)
+                                .frame(height: 52)
+                                .glassEffect(.regular, in: .rect(cornerRadius: 18))
+                            }
+                            .buttonStyle(.plain)
+                        }
                         label("颜色").padding(.top, 6)
                         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 6), spacing: 12) {
                             ForEach(Self.palette, id: \.self) { item in
@@ -155,6 +186,12 @@ struct BotEditor: View {
         .onAppear { if bot == nil { naming = true } }
     }
 
+    private static func title(_ model: ModelInfo) -> String {
+        let name = model.name?.isEmpty == false ? model.name! : model.ref
+        if let provider = model.providerName, !provider.isEmpty { return "\(name) · \(provider)" }
+        return name
+    }
+
     private func label(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 13, weight: .bold))
@@ -168,7 +205,7 @@ struct BotEditor: View {
         error = nil
         Task {
             do {
-                try await team.saveBot(id: bot?.id, name: trimmed, role: role.trimmingCharacters(in: .whitespacesAndNewlines), color: color)
+                try await team.saveBot(id: bot?.id, name: trimmed, role: role.trimmingCharacters(in: .whitespacesAndNewlines), color: color, model: model)
                 Haptics.thud()
                 dismiss()
             } catch {
