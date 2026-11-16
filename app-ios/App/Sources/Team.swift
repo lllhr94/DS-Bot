@@ -19,6 +19,15 @@ struct BotInfo: Decodable, Identifiable, Equatable {
     var model: String?
 }
 
+/// Who holds a Bot's browser when the Bot itself does not.
+struct BrowserHold: Decodable, Equatable {
+    var by: String?
+    var reason: String?
+    var note: String?
+    /// Set when the Bot asked for a hand and waits to hear how it went.
+    var callId: String?
+}
+
 /// A model the computer can give a Bot.
 struct ModelInfo: Decodable, Equatable, Identifiable {
     let ref: String
@@ -107,6 +116,9 @@ final class TeamModel: ObservableObject {
     /// Open questions, by the chat they were asked in.
     @Published private(set) var questions: [String: Question] = [:]
     @Published private(set) var models: [ModelInfo] = []
+    @Published private(set) var browserHolds: [String: BrowserHold] = [:]
+    /// False when the computer runs without Bot browsers.
+    @Published private(set) var browserOn = true
     @Published private(set) var hostName = ""
 
     private var raw: [String: Any] = [:]
@@ -355,6 +367,10 @@ final class TeamModel: ObservableObject {
         let nextWaiting = Set((raw["questions"] as? [String: Any] ?? [:]).keys)
         let nextModels = ((raw["models"] as? [Any]) ?? []).compactMap { Loose.decode(ModelInfo.self, $0) }
         if nextModels != models { models = nextModels }
+        let nextHolds = (raw["browserHolds"] as? [String: Any] ?? [:]).compactMapValues { Loose.decode(BrowserHold.self, $0) }
+        if nextHolds != browserHolds { browserHolds = nextHolds }
+        let nextBrowserOn = raw["browser"] as? Bool != false
+        if nextBrowserOn != browserOn { browserOn = nextBrowserOn }
         let nextQuestions = (raw["questions"] as? [String: Any] ?? [:]).compactMapValues { Loose.decode(Question.self, $0) }
         withAnimation(.smooth(duration: 0.35)) {
             if nextBots != bots { bots = nextBots }

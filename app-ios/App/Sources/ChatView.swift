@@ -15,6 +15,7 @@ struct ChatView: View {
     @State private var viewing: Viewing?
     @State private var pickingPhotos = false
     @State private var takingPhoto = false
+    @State private var browsing = false
 
     /// The photo open full screen.
     private struct Viewing: Identifiable {
@@ -164,6 +165,24 @@ struct ChatView: View {
                     .animation(.smooth, value: subtitle)
             }
             Spacer(minLength: 0)
+            if !isRoom {
+                Button {
+                    Haptics.grab()
+                    typing = false
+                    browsing = true
+                } label: {
+                    Image(systemName: "macwindow")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Color(hex: 0x0B0B0F))
+                        .frame(width: 44, height: 44)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("看它的浏览器")
+                .fullScreenCover(isPresented: $browsing) {
+                    BrowserView(team: team, bot: bot)
+                }
+            }
         }
         .padding(.horizontal, 8)
         .frame(height: 60)
