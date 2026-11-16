@@ -168,7 +168,6 @@ struct HomeView: View {
             .padding(.bottom, 4)
     }
 
-    @ViewBuilder
     /// Without the computer the Bots are asleep.
     private var asleep: Bool {
         switch team.phase {
@@ -177,6 +176,7 @@ struct HomeView: View {
         }
     }
 
+    @ViewBuilder
     private var badges: some View {
         if team.bots.isEmpty {
             Text(team.phase == .online ? "这台电脑上还没有 Bot。" : "连上电脑后，Bot 会出现在这里。")
