@@ -13,6 +13,11 @@ struct ChatLine: Identifiable, Equatable {
     var live = false
     /// Set on a message this phone sent that the computer has not shown back yet.
     var local: Local?
+    /// In a group: the Bot that said it.
+    var speaker: String?
+    var speakerName: String?
+    /// Photos picked on this phone, shown until the computer has them.
+    var images: [Data] = []
 }
 
 /// The chat with one Bot: reads it, keeps it live, sends into it.
@@ -34,9 +39,20 @@ final class ChatModel: ObservableObject {
     @Published private(set) var demoWorking = false
     @Published var error: String?
 
+    /// The pages before the newest one, oldest first.
+    @Published private(set) var earlier: [ChatLine] = []
+    @Published private(set) var hasEarlier = false
+    @Published private(set) var loadingEarlier = false
+
+    /// The Bot this chat is with. For a group: a stand-in that carries the group's name.
     let bot: BotInfo
+    /// Set when this is a group chat.
+    let roomId: String?
     private let team: TeamModel
-    private var sessionId: String
+    private(set) var sessionId: String
+    private var cursor: Any?
+    /// How the computer will show each sent message back.
+    private var echo: [String: String] = [:]
     private var feed: UUID?
     private var poll: Task<Void, Never>?
     private var demoReply: Task<Void, Never>?
@@ -56,7 +72,16 @@ final class ChatModel: ObservableObject {
     init(bot: BotInfo, team: TeamModel) {
         self.bot = bot
         self.team = team
+        roomId = nil
         sessionId = bot.sessionId ?? bot.id
+    }
+
+    init(room: RoomInfo, team: TeamModel) {
+        let first = team.bots.first { $0.id == room.members?.first }
+        bot = BotInfo(id: room.id, name: room.name, color: first?.color)
+        self.team = team
+        roomId = room.id
+        sessionId = room.sessionId ?? room.id
     }
 
     func open() {
@@ -128,8 +153,12 @@ final class ChatModel: ObservableObject {
         repeat {
             again = false
             do {
-                let page = try await team.call("chat", ["botId": bot.id, "steps": true])
+                let page = try await read(cursor: nil)
                 if let id = page["sessionId"] as? String { sessionId = id }
+                if !loaded {
+                    cursor = page["cursor"]
+                    hasEarlier = cursor != nil && !(cursor is NSNull)
+                }
                 apply(Self.lines(from: page["items"] as? [Any] ?? []))
                 loaded = true
             } catch let failure as LinkError {
@@ -139,6 +168,26 @@ final class ChatModel: ObservableObject {
                 self.error = "读不到对话，稍后会再试。"
             }
         } while again && !Task.isCancelled
+    }
+
+    private func read(cursor: Any?) async throws -> [String: Any] {
+        var payload: [String: Any] = ["steps": true]
+        if let roomId { payload["roomId"] = roomId } else { payload["botId"] = bot.id }
+        if let cursor { payload["cursor"] = cursor }
+        return try await team.call(roomId == nil ? "chat" : "room-chat", payload)
+    }
+
+    /// Reads the page before the oldest one shown.
+    func loadEarlier() async {
+        guard hasEarlier, !loadingEarlier, let cursor, !(cursor is NSNull) else { return }
+        loadingEarlier = true
+        defer { loadingEarlier = false }
+        guard let page = try? await read(cursor: cursor) else { return }
+        self.cursor = page["cursor"]
+        hasEarlier = self.cursor != nil && !(self.cursor is NSNull)
+        let shown = Set((earlier + lines).map(\.id))
+        let older = Self.lines(from: page["items"] as? [Any] ?? []).filter { !shown.contains($0.id) }
+        earlier = older + earlier
     }
 
     private func apply(_ next: [ChatLine]) {
@@ -161,10 +210,10 @@ final class ChatModel: ObservableObject {
         }
         let shownBack = pending.filter { local in
             guard let before = known[local.id] else { return false }
-            return next.contains { $0.kind == .user && !before.contains($0.id) && Self.same($0.text, local.text) }
+            return next.contains { $0.kind == .user && !before.contains($0.id) && Self.same($0.text, echo[local.id] ?? local.text) }
         }
         let nextPending = pending.filter { local in !shownBack.contains { $0.id == local.id } }
-        for local in shownBack { known[local.id] = nil }
+        for local in shownBack { known[local.id] = nil; echo[local.id] = nil }
         let grew = next.count + nextPending.count > lines.count + pending.count
         let change = {
             if self.lines != next { self.lines = next }
@@ -201,11 +250,12 @@ final class ChatModel: ObservableObject {
             let text = (item["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             switch kind {
             case "user":
-                let images = (item["images"] as? NSNumber)?.intValue ?? 0
-                let shownText = images > 0 ? (text.isEmpty ? "［图片 ×\(images)］" : "\(text)\n［图片 ×\(images)］") : text
+                let shownText = withPhotos(text, (item["images"] as? NSNumber)?.intValue ?? 0)
                 if !shownText.isEmpty { out.append(ChatLine(id: id, kind: .user, text: shownText)) }
             case "bot":
-                if !text.isEmpty { out.append(ChatLine(id: id, kind: .bot, text: text)) }
+                if !text.isEmpty {
+                    out.append(ChatLine(id: id, kind: .bot, text: text, speaker: item["botId"] as? String, speakerName: item["name"] as? String))
+                }
             case "steps":
                 let tools = (item["tools"] as? [Any])?.count ?? 0
                 let live = item["live"] as? Bool == true
@@ -219,6 +269,11 @@ final class ChatModel: ObservableObject {
             }
         }
         return out
+    }
+
+    /// A message's text with a note for the photos sent along.
+    private static func withPhotos(_ text: String, _ count: Int) -> String {
+        count > 0 ? (text.isEmpty ? "［图片 ×\(count)］" : "\(text)\n［图片 ×\(count)］") : text
     }
 
     // MARK: Live events
@@ -267,14 +322,17 @@ final class ChatModel: ObservableObject {
 
     // MARK: Sending
 
-    func send(_ text: String) {
+    func send(_ text: String, photos: [Data] = []) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty || !photos.isEmpty else { return }
         error = nil
-        if demo { sendDemo(trimmed); return }
-        let local = ChatLine(id: "local-\(UUID().uuidString)", kind: .user, text: trimmed, local: .sending)
-        withAnimation(.spring(response: 0.38, dampingFraction: 0.72)) { pending.append(local) }
-        Task { await deliver(local.id) }
+        if demo { sendDemo(Self.withPhotos(trimmed, photos.count)); return }
+        var local = ChatLine(id: "local-\(UUID().uuidString)", kind: .user, text: trimmed, local: .sending)
+        local.images = photos
+        echo[local.id] = Self.withPhotos(trimmed, photos.count)
+        let sent = local
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.72)) { pending.append(sent) }
+        Task { await deliver(sent.id) }
     }
 
     /// Tries a failed message again.
@@ -288,12 +346,40 @@ final class ChatModel: ObservableObject {
     func discard(_ id: String) {
         withAnimation(.smooth) { pending.removeAll { $0.id == id } }
         known[id] = nil
+        echo[id] = nil
+    }
+
+    /// Answers the question a Bot asked in this chat.
+    func answer(_ question: Question, selected: [String], custom: String) {
+        error = nil
+        Task {
+            do {
+                _ = try await team.call("answer-question", [
+                    "sessionId": sessionId,
+                    "questionId": question.id,
+                    "answer": ["selected": selected, "custom": custom.trimmingCharacters(in: .whitespacesAndNewlines)],
+                ])
+                Haptics.tick(0.8)
+                await refresh()
+            } catch {
+                self.error = "回答没送到，这个问题可能已经关了。"
+                Haptics.lock()
+            }
+        }
     }
 
     private func deliver(_ id: String) async {
         guard let local = pending.first(where: { $0.id == id }) else { return }
         do {
-            _ = try await team.call("send", ["sessionId": sessionId, "text": local.text])
+            // Photos go up one by one first; the message then names them.
+            var staged: [String] = []
+            for photo in local.images {
+                let answer = try await team.call("stage-image", ["mediaType": "image/jpeg", "data": photo.base64EncodedString()], timeout: 90)
+                if let id = answer["id"] as? String { staged.append(id) }
+            }
+            var payload: [String: Any] = ["sessionId": sessionId, "text": local.text]
+            if !staged.isEmpty { payload["images"] = staged }
+            _ = try await team.call("send", payload, timeout: 60)
             known[id] = Set(lines.map(\.id))
             await refresh()
         } catch {
@@ -314,7 +400,13 @@ final class ChatModel: ObservableObject {
             demoWorking = false
             return
         }
-        Task { _ = try? await team.call("stop-chat", ["botId": bot.id]) }
+        Task {
+            if let roomId {
+                _ = try? await team.call("stop-room-work", ["roomId": roomId])
+            } else {
+                _ = try? await team.call("stop-chat", ["botId": bot.id])
+            }
+        }
     }
 
     // MARK: Demo

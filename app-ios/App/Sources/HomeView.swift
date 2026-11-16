@@ -8,12 +8,17 @@ struct HomeView: View {
     @State private var poked: String?
     @State private var opened: BotInfo?
     @State private var approving: Approval?
+    @State private var openedRoom: RoomInfo?
     @Namespace private var zoom
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 header
+                    .fullScreenCover(item: $openedRoom) { room in
+                        ChatView(room: room, team: team)
+                            .navigationTransition(.zoom(sourceID: "room-" + room.id, in: zoom))
+                    }
                 if !team.approvals.isEmpty { slip.padding(.top, 22) }
                 section("Bot")
                 badges
@@ -236,6 +241,10 @@ struct HomeView: View {
     // MARK: Rooms
 
     private func roomRow(_ room: RoomInfo) -> some View {
+        Button {
+            Haptics.grab()
+            openedRoom = room
+        } label: {
         HStack(spacing: 12) {
             ZStack {
                 let members: [BotInfo] = (room.members ?? []).compactMap { id in team.bots.first { $0.id == id } }
@@ -261,6 +270,12 @@ struct HomeView: View {
             Spacer(minLength: 0)
         }
         .padding(14)
-        .glassEffect(.regular, in: .rect(cornerRadius: 24))
+        .contentShape(.rect(cornerRadius: 24))
+        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 24))
+        .matchedTransitionSource(id: "room-" + room.id, in: zoom) { source in
+            source.background(.clear).clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        }
+        }
+        .buttonStyle(.plain)
     }
 }

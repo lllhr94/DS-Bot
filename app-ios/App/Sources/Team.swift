@@ -24,6 +24,18 @@ struct RoomInfo: Decodable, Identifiable, Equatable {
     var members: [String]?
     var hidden: Bool?
     var lastAt: Double?
+    var sessionId: String?
+}
+
+/// Something a Bot asked and is waiting on.
+struct Question: Decodable, Equatable {
+    struct Option: Decodable, Equatable { var label: String }
+
+    let id: String
+    var question: String?
+    var detail: String?
+    var options: [Option]?
+    var multiSelect: Bool?
 }
 
 struct Approval: Decodable, Identifiable, Equatable {
@@ -82,6 +94,8 @@ final class TeamModel: ObservableObject {
     @Published private(set) var rooms: [RoomInfo] = []
     @Published private(set) var work = Work()
     @Published private(set) var waitingForAnswer: Set<String> = []
+    /// Open questions, by the chat they were asked in.
+    @Published private(set) var questions: [String: Question] = [:]
     @Published private(set) var hostName = ""
 
     private var raw: [String: Any] = [:]
@@ -139,10 +153,10 @@ final class TeamModel: ObservableObject {
     func unlisten(_ id: UUID) { feeds[id] = nil }
 
     /// Runs one endpoint on the computer and returns its value.
-    func call(_ endpoint: String, _ payload: [String: Any] = [:]) async throws -> [String: Any] {
+    func call(_ endpoint: String, _ payload: [String: Any] = [:], timeout: TimeInterval = 30) async throws -> [String: Any] {
         guard let client else { throw LinkError("link/offline", "还没连上电脑。") }
         let params = try JSONSerialization.data(withJSONObject: ["endpoint": endpoint, "payload": payload])
-        let data = try await client.call("bot", params: params)
+        let data = try await client.call("bot", params: params, timeout: timeout)
         guard let answer = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
         guard (answer["ok"] as? Bool) == true else {
             let failure = answer["error"] as? [String: Any]
@@ -172,6 +186,7 @@ final class TeamModel: ObservableObject {
         rooms = []
         work = Work()
         waitingForAnswer = []
+        questions = [:]
     }
 
     private static func explain(_ error: LinkError) -> String {
@@ -272,11 +287,13 @@ final class TeamModel: ObservableObject {
             .filter { $0.hidden != true }
         let nextWork = Loose.decode(Work.self, raw["work"]) ?? Work()
         let nextWaiting = Set((raw["questions"] as? [String: Any] ?? [:]).keys)
+        let nextQuestions = (raw["questions"] as? [String: Any] ?? [:]).compactMapValues { Loose.decode(Question.self, $0) }
         withAnimation(.smooth(duration: 0.35)) {
             if nextBots != bots { bots = nextBots }
             if nextRooms != rooms { rooms = nextRooms }
             if nextWork != work { work = nextWork }
             if nextWaiting != waitingForAnswer { waitingForAnswer = nextWaiting }
+            if nextQuestions != questions { questions = nextQuestions }
         }
     }
 

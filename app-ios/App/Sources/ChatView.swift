@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 
 struct ChatView: View {
@@ -7,16 +8,29 @@ struct ChatView: View {
     @State private var draft = ""
     @FocusState private var typing: Bool
     @State private var approving: Approval?
+    @State private var picks: [PhotosPickerItem] = []
+    @State private var photos: [Data] = []
+    @State private var chosen: Set<String> = []
 
     init(bot: BotInfo, team: TeamModel) {
         self.team = team
         _chat = StateObject(wrappedValue: ChatModel(bot: bot, team: team))
     }
 
+    init(room: RoomInfo, team: TeamModel) {
+        self.team = team
+        _chat = StateObject(wrappedValue: ChatModel(room: room, team: team))
+    }
+
+    private var isRoom: Bool { chat.roomId != nil }
+    private var question: Question? { team.questions[chat.sessionId] }
+
     /// The Bot as the team knows it now; the one the chat opened with if it is gone.
     private var bot: BotInfo { team.bots.first { $0.id == chat.bot.id } ?? chat.bot }
     private var tone: UInt32 { BadgeLook.tone(named: bot.color) }
-    private var working: Bool { chat.demoWorking || team.work.bots?[bot.id] != nil || !chat.streaming.isEmpty }
+    private var working: Bool {
+        chat.demoWorking || !chat.streaming.isEmpty || chat.lines.last?.live == true || (!isRoom && team.work.bots?[bot.id] != nil)
+    }
     /// Changes whenever the chat grows, so the view can follow the newest row.
     private var rows: Int { chat.lines.count &+ chat.pending.count &* 1000 }
     private var flow: Int { chat.streaming.count &+ (chat.fresh?.shown ?? 0) }
@@ -30,6 +44,30 @@ struct ChatView: View {
                         if chat.loaded && chat.lines.isEmpty && chat.pending.isEmpty && chat.streaming.isEmpty {
                             empty
                         }
+                        if chat.hasEarlier {
+                            Button {
+                                Haptics.light()
+                                let top = (chat.earlier.first ?? chat.lines.first)?.id
+                                Task {
+                                    await chat.loadEarlier()
+                                    // Stay on the message that was at the top.
+                                    if let top { proxy.scrollTo(top, anchor: .top) }
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    if chat.loadingEarlier { ProgressView().controlSize(.small) }
+                                    Text(chat.loadingEarlier ? "正在取" : "看更早的")
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundStyle(Color(hex: 0x1B1B22))
+                                }
+                                .padding(.horizontal, 16)
+                                .frame(height: 36)
+                                .background(Color.white.opacity(0.6), in: .capsule)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(chat.loadingEarlier)
+                        }
+                        ForEach(chat.earlier) { line in row(line) }
                         ForEach(chat.lines) { line in row(line) }
                         ForEach(chat.pending) { line in row(line) }
                         if !chat.streaming.isEmpty {
@@ -129,7 +167,13 @@ struct ChatView: View {
         switch team.phase {
         case .offline, .connecting: return "正在连接电脑"
         case .unpaired: return "需要重新配对"
-        default: return working ? "正在干活" : team.status(of: bot).text
+        default:
+            if working { return "正在干活" }
+            if isRoom {
+                let count = team.rooms.first { $0.id == chat.roomId }?.members?.count ?? 0
+                return count > 0 ? "\(count) 个 Bot 在群里" : "群聊"
+            }
+            return team.status(of: bot).text
         }
     }
 
@@ -140,6 +184,21 @@ struct ChatView: View {
         switch line.kind {
         case .user:
             VStack(alignment: .trailing, spacing: 4) {
+                if !line.images.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(Array(line.images.enumerated()), id: \.offset) { _, data in
+                            if let image = UIImage(data: data) {
+                                Image(uiImage: image)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: 84, height: 84)
+                                    .clipShape(.rect(cornerRadius: 16))
+                            }
+                        }
+                    }
+                    .opacity(line.local == .sending ? 0.72 : 1)
+                }
+                if !line.text.isEmpty {
                 Text(line.text)
                     .font(.system(size: 17))
                     .lineSpacing(3)
@@ -153,6 +212,7 @@ struct ChatView: View {
                     .shadow(color: Color(hex: 0x1756CC).opacity(0.26), radius: 9, y: 8)
                     .opacity(line.local == .sending ? 0.72 : 1)
                     .textSelection(.enabled)
+                }
                 if line.local == .failed {
                     HStack(spacing: 12) {
                         Button("重发") { Haptics.light(); chat.retry(line.id) }
@@ -170,10 +230,22 @@ struct ChatView: View {
                 removal: .opacity
             ))
         case .bot:
-            botText(line)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .background(BotBubble())
+            VStack(alignment: .leading, spacing: 5) {
+                if isRoom, let who = speaker(of: line) {
+                    HStack(spacing: 6) {
+                        Face(tone: BadgeLook.tone(named: who.color), size: 18, ears: Ears.of(who.name))
+                        Text(who.name)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(Color.shade(BadgeLook.tone(named: who.color), amount: 0.5))
+                    }
+                    .padding(.leading, 6)
+                    .padding(.top, 6)
+                }
+                botText(line)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .background(BotBubble())
+            }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.trailing, 44)
                 .transition(.asymmetric(
@@ -211,6 +283,13 @@ struct ChatView: View {
         }
     }
 
+    /// Who said a line in a group.
+    private func speaker(of line: ChatLine) -> (name: String, color: String?)? {
+        if let known = team.bots.first(where: { $0.id == line.speaker }) { return (known.name, known.color) }
+        if let name = line.speakerName, !name.isEmpty { return (name, nil) }
+        return nil
+    }
+
     /// The reply that just finished keeps flowing out where the streaming row stopped, then its tail clears.
     @ViewBuilder
     private func botText(_ line: ChatLine) -> some View {
@@ -239,12 +318,93 @@ struct ChatView: View {
 
     // MARK: Composer
 
-    private var canSend: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var canSend: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !photos.isEmpty }
+
+    /// Smaller and as JPEG: what the computer takes, and quick to send.
+    private static func shrink(_ data: Data) -> Data? {
+        guard let image = UIImage(data: data) else { return nil }
+        let longest = max(image.size.width, image.size.height)
+        let scale = min(1, 1568 / max(1, longest))
+        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let small = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: size))
+        }
+        return small.jpegData(compressionQuality: 0.8)
+    }
+
+    /// The question the Bot is waiting on: tap an option, or type an answer below.
+    private func questionCard(_ asked: Question) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Face(tone: tone, size: 30, mood: .asking, ears: Ears.of(bot.name))
+                    .padding(.top, 8)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(asked.question ?? "\(bot.name)有个问题")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(Color(hex: 0x0B0B0F))
+                    if let detail = asked.detail, !detail.isEmpty {
+                        Text(detail)
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color(hex: 0x3A3A45))
+                            .lineLimit(4)
+                    }
+                }
+            }
+            let many = asked.multiSelect == true
+            ForEach(asked.options ?? [], id: \.label) { option in
+                Button {
+                    if many {
+                        Haptics.tick(0.6)
+                        if chosen.contains(option.label) { chosen.remove(option.label) } else { chosen.insert(option.label) }
+                    } else {
+                        Haptics.grab()
+                        chat.answer(asked, selected: [option.label], custom: "")
+                    }
+                } label: {
+                    HStack {
+                        Text(option.label)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Color(hex: 0x0B0B0F))
+                            .multilineTextAlignment(.leading)
+                        Spacer(minLength: 0)
+                        if many {
+                            Image(systemName: chosen.contains(option.label) ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(Color(hex: 0x1756CC))
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 11)
+                    .background(Color.white.opacity(chosen.contains(option.label) ? 0.95 : 0.7), in: .rect(cornerRadius: 16))
+                }
+                .buttonStyle(.plain)
+            }
+            if many && !chosen.isEmpty {
+                Button {
+                    Haptics.grab()
+                    chat.answer(asked, selected: (asked.options ?? []).map(\.label).filter(chosen.contains), custom: "")
+                    chosen = []
+                } label: {
+                    Text("选好了")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 42)
+                        .background(Color(hex: 0x1756CC), in: .capsule)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(14)
+        .glassEffect(.regular, in: .rect(cornerRadius: 24))
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
     private var showStop: Bool { working && !canSend }
 
     private var composer: some View {
         VStack(spacing: 8) {
-            if let waiting = team.approvals.first(where: { $0.botId == chat.bot.id }) {
+            if let waiting = team.approvals.first(where: { isRoom ? $0.roomId == chat.roomId : $0.botId == chat.bot.id }) {
                 Button {
                     Haptics.grab()
                     typing = false
@@ -274,6 +434,41 @@ struct ChatView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .accessibilityLabel("\(bot.name)在等你批准")
             }
+            if let asked = question {
+                questionCard(asked)
+            }
+            if !photos.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(photos.enumerated()), id: \.offset) { index, data in
+                            if let image = UIImage(data: data) {
+                                Image(uiImage: image)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: 64, height: 64)
+                                    .clipShape(.rect(cornerRadius: 14))
+                                    .overlay(alignment: .topTrailing) {
+                                        Button {
+                                            Haptics.light()
+                                            withAnimation(.smooth) { _ = photos.remove(at: index) }
+                                        } label: {
+                                            Image(systemName: "xmark.circle.fill")
+                                                .font(.system(size: 20))
+                                                .foregroundStyle(.white, Color.black.opacity(0.55))
+                                        }
+                                        .buttonStyle(.plain)
+                                        .offset(x: 6, y: -6)
+                                        .accessibilityLabel("去掉这张")
+                                    }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.top, 8)
+                }
+                .scrollIndicators(.hidden)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             if let error = chat.error {
                 Text(error)
                     .font(.system(size: 13, weight: .semibold))
@@ -285,12 +480,22 @@ struct ChatView: View {
                     .onTapGesture { withAnimation(.smooth) { chat.error = nil } }
             }
             HStack(alignment: .bottom, spacing: 6) {
-                TextField("给\(bot.name)发消息", text: $draft, axis: .vertical)
+                if question == nil {
+                    PhotosPicker(selection: $picks, maxSelectionCount: 4, matching: .images) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundStyle(Color(hex: 0x0B0B0F))
+                            .frame(width: 44, height: 44)
+                            .background(Color.black.opacity(0.06), in: .circle)
+                    }
+                    .accessibilityLabel("添加照片")
+                }
+                TextField(question == nil ? "给\(bot.name)发消息" : "也可以写下你的回答", text: $draft, axis: .vertical)
                     .lineLimit(1...5)
                     .font(.system(size: 17))
                     .foregroundStyle(Color(hex: 0x0B0B0F))
                     .focused($typing)
-                    .padding(.leading, 14)
+                    .padding(.leading, question == nil ? 4 : 14)
                     .padding(.vertical, 11)
                 Button {
                     if showStop {
@@ -298,7 +503,12 @@ struct ChatView: View {
                         chat.stop()
                     } else {
                         Haptics.grab()
-                        chat.send(draft)
+                        if let asked = question {
+                            chat.answer(asked, selected: [], custom: draft)
+                        } else {
+                            chat.send(draft, photos: photos)
+                            photos = []
+                        }
                         draft = ""
                     }
                 } label: {
@@ -329,6 +539,20 @@ struct ChatView: View {
         .padding(.top, 6)
         .padding(.bottom, 8)
         .animation(.smooth, value: chat.error)
+        .animation(.spring(response: 0.45, dampingFraction: 0.8), value: question)
+        .animation(.smooth, value: photos.count)
+        .onChange(of: picks) {
+            guard !picks.isEmpty else { return }
+            let picked = picks
+            picks = []
+            Task {
+                for item in picked {
+                    if let data = try? await item.loadTransferable(type: Data.self), let small = Self.shrink(data), photos.count < 4 {
+                        photos.append(small)
+                    }
+                }
+            }
+        }
         .animation(.spring(response: 0.45, dampingFraction: 0.75), value: team.approvals)
         .fullScreenCover(item: $approving) { approval in
             ApproveView(approval: approval, team: team)
