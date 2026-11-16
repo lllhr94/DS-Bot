@@ -15,7 +15,9 @@ struct ChatView: View {
     @State private var viewing: Viewing?
     @State private var pickingPhotos = false
     @State private var takingPhoto = false
-    @State private var browsing = false
+    @StateObject private var dictation = Dictation()
+    /// What was typed before the user started talking.
+    @State private var spokenBase = ""
 
     /// The photo open full screen.
     private struct Viewing: Identifiable {
@@ -40,7 +42,7 @@ struct ChatView: View {
     private var bot: BotInfo { team.bots.first { $0.id == chat.bot.id } ?? chat.bot }
     private var tone: UInt32 { BadgeLook.tone(named: bot.color) }
     private var working: Bool {
-        chat.demoWorking || !chat.streaming.isEmpty || chat.lines.last?.live == true || (!isRoom && team.work.bots?[bot.id] != nil)
+        chat.demoWorking || !chat.streaming.isEmpty || chat.lines.last?.live == true || team.isWorking(chat.key)
     }
     /// Changes whenever the chat grows, so the view can follow the newest row.
     private var rows: Int { chat.lines.count &+ chat.pending.count &* 1000 }
@@ -127,9 +129,9 @@ struct ChatView: View {
             Haptics.prepare()
             chat.open()
         }
-        .onDisappear { chat.close() }
-        .onChange(of: team.phase) {
-            if team.phase == .online { Task { await chat.refresh() } }
+        .onDisappear {
+            chat.close()
+            if dictation.listening { dictation.stop() }
         }
     }
 
@@ -149,7 +151,7 @@ struct ChatView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("返回")
-            Face(tone: tone, size: 34, mood: working ? .busy : .happy, ears: Ears.of(bot.name))
+            Face(tone: tone, size: 34, mood: dictation.listening ? .asking : (working ? .busy : .happy), ears: Ears.of(bot.name))
                 .padding(.top, 8)
                 .padding(.horizontal, 3)
             VStack(alignment: .leading, spacing: 1) {
@@ -165,24 +167,6 @@ struct ChatView: View {
                     .animation(.smooth, value: subtitle)
             }
             Spacer(minLength: 0)
-            if !isRoom {
-                Button {
-                    Haptics.grab()
-                    typing = false
-                    browsing = true
-                } label: {
-                    Image(systemName: "macwindow")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(Color(hex: 0x0B0B0F))
-                        .frame(width: 44, height: 44)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("看它的浏览器")
-                .fullScreenCover(isPresented: $browsing) {
-                    BrowserView(team: team, bot: bot)
-                }
-            }
         }
         .padding(.horizontal, 8)
         .frame(height: 60)
@@ -193,17 +177,12 @@ struct ChatView: View {
     }
 
     private var subtitle: String {
-        switch team.phase {
-        case .offline, .connecting: return "正在连接电脑"
-        case .unpaired: return "需要重新配对"
-        default:
-            if working { return "正在干活" }
-            if isRoom {
-                let count = team.rooms.first { $0.id == chat.roomId }?.members?.count ?? 0
-                return count > 0 ? "\(count) 个 Bot 在群里" : "群聊"
-            }
-            return team.status(of: bot).text
+        if working { return team.doing[chat.key] ?? "正在干活" }
+        if isRoom {
+            let count = team.rooms.first { $0.id == chat.roomId }?.members?.count ?? 0
+            return count > 0 ? "\(count) 个 Bot 在群里" : "群聊"
         }
+        return team.status(of: bot).text
     }
 
     // MARK: Rows
@@ -385,7 +364,7 @@ struct ChatView: View {
             Text("跟\(bot.name)说点什么吧")
                 .font(.system(size: 20, weight: .heavy))
                 .foregroundStyle(Color(hex: 0x0B0B0F))
-            Text("它在你的电脑上干活，做完会在这里告诉你。")
+            Text(isRoom ? "在群里说一句，大家会轮流接话。" : "它就住在你的手机里，有什么事直接说。")
                 .font(.system(size: 15))
                 .foregroundStyle(Color(hex: 0x3A3A45))
                 .multilineTextAlignment(.center)
@@ -481,9 +460,88 @@ struct ChatView: View {
     }
     private var showStop: Bool { working && !canSend }
 
+    /// What the round button does now.
+    private enum Act { case hush, stop, send, talk }
+
+    private var act: Act {
+        if dictation.listening { return .hush }
+        if showStop { return .stop }
+        if canSend { return .send }
+        return .talk
+    }
+
+    private var action: some View {
+        let act = self.act
+        let icon: String = switch act {
+        case .hush: "waveform"
+        case .stop: "stop.fill"
+        case .send: "arrow.up"
+        case .talk: "mic.fill"
+        }
+        let fill: AnyShapeStyle = switch act {
+        case .hush: AnyShapeStyle(Color(hex: 0xF0616D))
+        case .stop: AnyShapeStyle(Color(hex: 0x0B0B0F))
+        case .send: AnyShapeStyle(LinearGradient(colors: [Color(hex: 0x2A6FE6), Color(hex: 0x1756CC)], startPoint: .top, endPoint: .bottom))
+        case .talk: AnyShapeStyle(Color.black.opacity(0.06))
+        }
+        let spoken: String = switch act {
+        case .hush: "说完了"
+        case .stop: "让它停下"
+        case .send: "发送"
+        case .talk: "说话"
+        }
+        return Button {
+            switch act {
+            case .hush:
+                Haptics.light()
+                dictation.stop()
+            case .stop:
+                Haptics.lock()
+                chat.stop()
+            case .send:
+                Haptics.grab()
+                if let asked = question {
+                    chat.answer(asked, selected: [], custom: draft)
+                } else {
+                    chat.send(draft, photos: photos)
+                    photos = []
+                }
+                draft = ""
+            case .talk:
+                Haptics.grab()
+                typing = false
+                spokenBase = draft
+                dictation.onText = { heard in
+                    draft = spokenBase.isEmpty ? heard : spokenBase + heard
+                }
+                Task { await dictation.start() }
+            }
+        } label: {
+            ZStack {
+                if act == .hush {
+                    Circle()
+                        .fill(Color(hex: 0xF0616D).opacity(0.28))
+                        .scaleEffect(1 + dictation.level * 0.7)
+                        .animation(.easeOut(duration: 0.12), value: dictation.level)
+                }
+                Image(systemName: icon)
+                    .font(.system(size: act == .stop ? 14 : 17, weight: .heavy))
+                    .foregroundStyle(act == .talk ? Color(hex: 0x0B0B0F) : .white)
+                    .contentTransition(.symbolEffect(.replace))
+                    .symbolEffect(.variableColor.iterative, isActive: act == .hush)
+                    .frame(width: 44, height: 44)
+                    .background(fill, in: .circle)
+            }
+            .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: act)
+        .accessibilityLabel(spoken)
+    }
+
     private var composer: some View {
         VStack(spacing: 8) {
-            if let waiting = team.approvals.first(where: { isRoom ? $0.roomId == chat.roomId : $0.botId == chat.bot.id }) {
+            if let waiting = team.approvals.first(where: { $0.chat == chat.key || (!isRoom && $0.chat == nil && $0.botId == chat.bot.id) }) {
                 Button {
                     Haptics.grab()
                     typing = false
@@ -548,6 +606,16 @@ struct ChatView: View {
                 .scrollIndicators(.hidden)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+            if let problem = dictation.problem {
+                Text(problem)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color(hex: 0xB4232F))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Color.white.opacity(0.8), in: .capsule)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .onTapGesture { withAnimation(.smooth) { dictation.problem = nil } }
+            }
             if let error = chat.error {
                 Text(error)
                     .font(.system(size: 13, weight: .semibold))
@@ -572,47 +640,14 @@ struct ChatView: View {
                     }
                     .accessibilityLabel("添加照片")
                 }
-                TextField(question == nil ? "给\(bot.name)发消息" : "也可以写下你的回答", text: $draft, axis: .vertical)
+                TextField(dictation.listening ? "正在听，说完点右边" : (question == nil ? "给\(bot.name)发消息" : "也可以写下你的回答"), text: $draft, axis: .vertical)
                     .lineLimit(1...5)
                     .font(.system(size: 17))
                     .foregroundStyle(Color(hex: 0x0B0B0F))
                     .focused($typing)
                     .padding(.leading, question == nil ? 4 : 14)
                     .padding(.vertical, 11)
-                Button {
-                    if showStop {
-                        Haptics.lock()
-                        chat.stop()
-                    } else {
-                        Haptics.grab()
-                        if let asked = question {
-                            chat.answer(asked, selected: [], custom: draft)
-                        } else {
-                            chat.send(draft, photos: photos)
-                            photos = []
-                        }
-                        draft = ""
-                    }
-                } label: {
-                    Image(systemName: showStop ? "stop.fill" : "arrow.up")
-                        .font(.system(size: showStop ? 14 : 17, weight: .heavy))
-                        .foregroundStyle(.white)
-                        .contentTransition(.symbolEffect(.replace))
-                        .frame(width: 44, height: 44)
-                        .background(
-                            showStop
-                                ? AnyShapeStyle(Color(hex: 0x0B0B0F))
-                                : AnyShapeStyle(LinearGradient(colors: [Color(hex: 0x2A6FE6), Color(hex: 0x1756CC)], startPoint: .top, endPoint: .bottom)),
-                            in: .circle
-                        )
-                        .opacity(canSend || showStop ? 1 : 0.35)
-                        .scaleEffect(canSend || showStop ? 1 : 0.9)
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSend && !showStop)
-                .animation(.spring(response: 0.3, dampingFraction: 0.6), value: canSend)
-                .animation(.spring(response: 0.3, dampingFraction: 0.6), value: showStop)
-                .accessibilityLabel(showStop ? "让它停下" : "发送")
+                action
             }
             .padding(6)
             .glassEffect(.regular, in: .rect(cornerRadius: 28))

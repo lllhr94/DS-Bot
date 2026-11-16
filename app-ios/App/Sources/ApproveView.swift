@@ -1,4 +1,3 @@
-import DSLink
 import SwiftUI
 
 /// One approval slip at a time: slide to stamp it approved, or turn it down.
@@ -141,7 +140,7 @@ struct ApproveView: View {
         switch verdict {
         case .allowed: return "\(name)已经继续干活。"
         case .rejected: return "\(name)不会做这件事。"
-        case nil: return answerable ? "向右滑到底，就算批准。" : "这张单子要在电脑上回答。"
+        case nil: return answerable ? "向右滑到底，就算批准。" : "这张单子现在答不了。"
         }
     }
 
@@ -271,20 +270,14 @@ struct ApproveView: View {
                 handled.insert(asked.id)
                 stamp(allow ? .allowed : .rejected)
             } catch {
-                let code = (error as? LinkError)?.code
-                let offline = code == "link/offline" || code == "TRANSPORT_CLOSED" || code == "RPC_TIMEOUT"
                 Haptics.lock()
                 lastTick = 0
                 withAnimation(.spring(response: 0.42, dampingFraction: 0.6)) {
                     slide = 0
-                    note = offline ? "还没连上电脑，等连上再试。" : "这张单子已经不在了。"
+                    note = "这张单子已经不在了。"
                 }
-                if offline {
-                    busy = false
-                } else {
-                    handled.insert(asked.id)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { advance() }
-                }
+                handled.insert(asked.id)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { advance() }
             }
         }
     }

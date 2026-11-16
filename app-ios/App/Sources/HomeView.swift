@@ -10,6 +10,8 @@ struct HomeView: View {
     @State private var approving: Approval?
     @State private var openedRoom: RoomInfo?
     @State private var editing: Editing?
+    @State private var settingUp = false
+    @State private var makingRoom = false
 
     /// The Bot card open for editing; `bot` nil makes a new one.
     private struct Editing: Identifiable {
@@ -68,10 +70,10 @@ struct HomeView: View {
                 Spacer()
                 Menu {
                     Button("新建 Bot", systemImage: "plus") { editing = Editing(id: "new") }
+                    Button("拉个群", systemImage: "person.3") { makingRoom = true }
+                    Button("设置", systemImage: "slider.horizontal.3") { settingUp = true }
                     if team.phase == .demo {
                         Button("退出演示", systemImage: "rectangle.portrait.and.arrow.right") { model.leave() }
-                    } else {
-                        Button("断开这台电脑", systemImage: "link.badge.plus", role: .destructive) { model.leave() }
                     }
                 } label: {
                     Image(systemName: "gearshape")
@@ -85,6 +87,10 @@ struct HomeView: View {
                 .sheet(item: $editing) { target in
                     BotEditor(team: team, bot: target.bot)
                 }
+                .sheet(isPresented: $makingRoom) { RoomEditor(team: team) }
+                .fullScreenCover(isPresented: $settingUp) {
+                    SettingsView(team: team) { model.leave() }
+                }
             }
             HStack(spacing: 8) {
                 Circle().fill(chip.color).frame(width: 8, height: 8)
@@ -96,20 +102,7 @@ struct HomeView: View {
             .padding(.horizontal, 14)
             .frame(height: 34)
             .glassEffect(.regular, in: .capsule)
-            if team.phase == .unpaired {
-                Button {
-                    Haptics.light()
-                    model.leave()
-                } label: {
-                    Text("重新配对")
-                        .font(.system(size: 16, weight: .semibold))
-                        .frame(height: 30)
-                        .padding(.horizontal, 8)
-                }
-                .buttonStyle(.glassProminent)
-                .buttonBorderShape(.capsule)
-                .tint(Color(hex: 0x1F6AE8))
-            }
+            .onTapGesture { settingUp = true }
         }
         .padding(.horizontal, 20)
         .padding(.top, 8)
@@ -117,11 +110,13 @@ struct HomeView: View {
 
     private var chip: (text: String, color: Color) {
         switch team.phase {
-        case .connecting: return ("正在连接 \(team.hostName)", Color(hex: 0xD9930D))
-        case .online: return (team.hostName.isEmpty ? "已连接" : "已连接 \(team.hostName)", Color(hex: 0x0C8172))
-        case .offline(let why): return (why, Color(hex: 0xB4232F))
-        case .unpaired: return ("电脑已经不认识这台手机了", Color(hex: 0xB4232F))
-        case .demo: return ("演示数据，还没连接电脑", Color(hex: 0x5563E6))
+        case .demo: return ("演示数据，还没接模型", Color(hex: 0x5563E6))
+        case .setup: return ("还没接模型，点这里设置", Color(hex: 0xB4232F))
+        case .ready:
+            let busy = team.doing.count
+            if busy > 0 { return ("\(busy) 个在干活", Color(hex: 0x5B8DEF)) }
+            guard let found = team.resolve(team.settings.defaultModel) else { return ("还没选模型，点这里设置", Color(hex: 0xB4232F)) }
+            return ("\(found.model) · 都在", Color(hex: 0x0C8172))
         }
     }
 
@@ -185,18 +180,13 @@ struct HomeView: View {
             .padding(.bottom, 4)
     }
 
-    /// Without the computer the Bots are asleep.
-    private var asleep: Bool {
-        switch team.phase {
-        case .online, .demo: return false
-        default: return true
-        }
-    }
+    /// Without a model the Bots are asleep.
+    private var asleep: Bool { team.phase == .setup }
 
     @ViewBuilder
     private var badges: some View {
         if team.bots.isEmpty {
-            Text(team.phase == .online ? "这台电脑上还没有 Bot。" : "连上电脑后，Bot 会出现在这里。")
+            Text("还没有 Bot，点右上角新建一个。")
                 .font(.system(size: 15))
                 .foregroundStyle(Color(hex: 0x3A3A45))
                 .padding(.horizontal, 22)
@@ -358,5 +348,8 @@ struct HomeView: View {
         }
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button("解散这个群", systemImage: "trash", role: .destructive) { team.deleteRoom(room.id) }
+        }
     }
 }

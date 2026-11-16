@@ -1,7 +1,21 @@
 import SwiftUI
+import UserNotifications
+
+/// Shows a Bot's notification even while the app is open.
+final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        UNUserNotificationCenter.current().delegate = self
+        return true
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        [.banner, .sound, .list]
+    }
+}
 
 @main
 struct DSBotApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var model = AppModel()
     @Environment(\.scenePhase) private var scenePhase
 
@@ -13,12 +27,12 @@ struct DSBotApp: App {
                 switch model.screen {
                 case .welcome:
                     WelcomeView(
-                        onPair: { model.go(.pair) },
+                        onStart: { model.go(.setup) },
                         onDemo: { model.startDemo() }
                     )
                     .transition(.blurReplace)
-                case .pair:
-                    PairView(model: model)
+                case .setup:
+                    SetupView(team: model.team, first: true) { model.go(.home) }
                         .transition(.blurReplace)
                 case .home:
                     HomeView(model: model, team: model.team)
@@ -29,6 +43,13 @@ struct DSBotApp: App {
             .fontDesign(.rounded)
             .onChange(of: scenePhase) {
                 if scenePhase == .active { model.team.wake() }
+            }
+            .task {
+                // Messages set for later land in their chats while the app is open too.
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 20_000_000_000)
+                    model.team.deliverDue()
+                }
             }
         }
     }

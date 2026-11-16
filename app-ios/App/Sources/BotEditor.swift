@@ -1,4 +1,3 @@
-import DSLink
 import SwiftUI
 
 /// A Bot's card to fill in: its name, what it does, and its color. Makes a new Bot when `bot` is nil.
@@ -11,6 +10,7 @@ struct BotEditor: View {
     @State private var role: String
     @State private var color: String
     @State private var model: String?
+    @State private var instructions: String
     @State private var busy = false
     @State private var error: String?
     @State private var confirmingDelete = false
@@ -24,6 +24,7 @@ struct BotEditor: View {
         _name = State(initialValue: bot?.name ?? "")
         _role = State(initialValue: bot?.role ?? "")
         _color = State(initialValue: bot?.color.flatMap { BadgeLook.tones[$0] == nil ? nil : $0 } ?? "blue")
+        _instructions = State(initialValue: bot?.instructions ?? "")
     }
 
     private var tone: UInt32 { BadgeLook.tone(named: color) }
@@ -78,9 +79,25 @@ struct BotEditor: View {
                             .padding(.horizontal, 16)
                             .frame(height: 52)
                             .glassEffect(.regular, in: .rect(cornerRadius: 18))
+                        label("性格和说明").padding(.top, 6)
+                        TextField("比如：说话温柔，爱用表情；擅长做饭，会根据冰箱里有的东西出主意。", text: $instructions, axis: .vertical)
+                            .font(.system(size: 16))
+                            .lineLimit(3...8)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 14)
+                            .glassEffect(.regular, in: .rect(cornerRadius: 18))
                         if !team.models.isEmpty {
                             label("用哪个模型").padding(.top, 6)
                             Menu {
+                                Button {
+                                    model = ""
+                                } label: {
+                                    if (model ?? bot?.model ?? "").isEmpty {
+                                        Label("跟默认的走", systemImage: "checkmark")
+                                    } else {
+                                        Text("跟默认的走")
+                                    }
+                                }
                                 ForEach(team.models) { item in
                                     Button {
                                         model = item.ref
@@ -94,7 +111,7 @@ struct BotEditor: View {
                                 }
                             } label: {
                                 HStack {
-                                    Text(team.models.first { $0.ref == (model ?? bot?.model) }.map(Self.title) ?? (bot == nil ? "让电脑决定" : (bot?.model ?? "让电脑决定")))
+                                    Text(team.models.first { $0.ref == (model ?? bot?.model) }.map(Self.title) ?? "跟默认的走（\(team.modelTitle(team.settings.defaultModel))）")
                                         .font(.system(size: 17))
                                         .lineLimit(1)
                                     Spacer()
@@ -205,13 +222,14 @@ struct BotEditor: View {
         error = nil
         Task {
             do {
-                try await team.saveBot(id: bot?.id, name: trimmed, role: role.trimmingCharacters(in: .whitespacesAndNewlines), color: color, model: model)
+                try await team.saveBot(id: bot?.id, name: trimmed, role: role.trimmingCharacters(in: .whitespacesAndNewlines), color: color, model: model,
+                                       instructions: instructions.trimmingCharacters(in: .whitespacesAndNewlines))
                 Haptics.thud()
                 dismiss()
             } catch {
                 busy = false
                 Haptics.lock()
-                self.error = "没存上：\((error as? LinkError)?.message ?? "出错了")"
+                self.error = "没存上：\(error.localizedDescription)"
             }
         }
     }
@@ -226,7 +244,7 @@ struct BotEditor: View {
                 dismiss()
             } catch {
                 busy = false
-                self.error = "没删掉：\((error as? LinkError)?.message ?? "出错了")"
+                self.error = "没删掉：\(error.localizedDescription)"
             }
         }
     }

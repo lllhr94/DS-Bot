@@ -13,14 +13,14 @@ private let ready = Color(hex: 0x34C98A)
 private let busy = Color(hex: 0xF5A623)
 
 private let hangs: [Hang] = [
-    Hang(look: BadgeLook(name: "写手", role: "写文档 · 改稿子", status: "空闲", light: ready, tone: 0xC9670F), x: 0.07, strap: 74, scale: 0.68, blur: 3),
-    Hang(look: BadgeLook(name: "运维", role: "看服务 · 跑命令", status: "等你批准", light: busy, tone: 0x0E9684, mood: .asking), x: 0.90, strap: 50, scale: 0.66, blur: 2.5),
-    Hang(look: BadgeLook(name: "主管", role: "分派任务 · 管理团队", status: "随时待命", light: ready, tone: 0x5563E6), x: 0.27, strap: 156, scale: 1, blur: 0),
-    Hang(look: BadgeLook(name: "调研", role: "查资料 · 逛网页", status: "正在干活", light: Color(hex: 0x5B8DEF), tone: 0xD3458B, mood: .busy), x: 0.73, strap: 268, scale: 1, blur: 0),
+    Hang(look: BadgeLook(name: "墨墨", role: "写东西 · 改稿子", status: "空闲", light: ready, tone: 0xC9670F), x: 0.07, strap: 74, scale: 0.68, blur: 3),
+    Hang(look: BadgeLook(name: "饭团", role: "吃什么 · 怎么做", status: "等你批准", light: busy, tone: 0x0E9684, mood: .asking), x: 0.90, strap: 50, scale: 0.66, blur: 2.5),
+    Hang(look: BadgeLook(name: "团子", role: "贴身助理", status: "随时待命", light: ready, tone: 0x5563E6), x: 0.27, strap: 156, scale: 1, blur: 0),
+    Hang(look: BadgeLook(name: "小探", role: "查资料 · 逛网页", status: "正在干活", light: Color(hex: 0x5B8DEF), tone: 0xD3458B, mood: .busy), x: 0.73, strap: 268, scale: 1, blur: 0),
 ]
 
 struct WelcomeView: View {
-    var onPair: () -> Void
+    var onStart: () -> Void
     var onDemo: () -> Void
 
     @StateObject private var sway = Sway(lengths: hangs.map { Double($0.strap) + 110 })
@@ -56,19 +56,19 @@ struct WelcomeView: View {
 
     private var footer: some View {
         VStack(spacing: 10) {
-            Text("你的团队，随时待命")
+            Text("口袋里的 Bot 团队")
                 .font(.system(size: 30, weight: .heavy))
                 .tracking(-0.5)
                 .foregroundStyle(Color(hex: 0x0B0B0F))
-            Text("把事情交给 Bot，需要你的时候再来找你。")
+            Text("它们住在你的手机里，记得你，也会主动找你。")
                 .font(.system(size: 17))
                 .foregroundStyle(Color(hex: 0x2A2A33))
                 .multilineTextAlignment(.center)
             Button {
                 Haptics.light()
-                onPair()
+                onStart()
             } label: {
-                Text("扫码连接电脑")
+                Text("开始")
                     .font(.system(size: 18, weight: .semibold))
                     .frame(maxWidth: .infinity)
                     .frame(height: 36)

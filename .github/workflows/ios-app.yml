@@ -26,6 +26,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Test the engine (AgentKit)
+        working-directory: app-ios/AgentKit
+        run: |
+          set -o pipefail
+          swift test 2>&1 | tail -n 80
+
       - name: Generate the Xcode project
         run: |
           which xcodegen || brew install xcodegen
@@ -53,6 +59,8 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :NSCameraUsageDescription' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :NSSpeechRecognitionUsageDescription' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :NSCalendarsFullAccessUsageDescription' "$APP/Info.plist"
           mkdir -p Payload
           cp -R "$APP" Payload/
           zip -qry BotTeam-unsigned.ipa Payload

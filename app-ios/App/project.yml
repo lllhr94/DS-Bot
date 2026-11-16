@@ -4,26 +4,31 @@ options:
   deploymentTarget:
     iOS: "26.0"
 packages:
-  DSLink:
-    path: ../DSLink
+  AgentKit:
+    path: ../AgentKit
 targets:
   DSBotApp:
     type: application
     platform: iOS
     sources: [Sources]
     dependencies:
-      - package: DSLink
+      - package: AgentKit
     info:
       path: Info.plist
       properties:
         CFBundleDisplayName: Bot 团队
-        CFBundleShortVersionString: "0.10"
-        CFBundleVersion: "11"
+        CFBundleShortVersionString: "0.11"
+        CFBundleVersion: "12"
         UILaunchScreen: {}
         CADisableMinimumFrameDurationOnPhone: true
         UIRequiresFullScreen: true
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
-        NSCameraUsageDescription: 用相机扫描电脑上的配对二维码，或者拍照发给 Bot。
+        NSCameraUsageDescription: 拍照发给 Bot 看。
+        NSMicrophoneUsageDescription: 按下说话时，用麦克风听你说的话。
+        NSSpeechRecognitionUsageDescription: 把你说的话转成文字，发给 Bot。
+        NSCalendarsFullAccessUsageDescription: Bot 帮你查日程、加日程（加之前会问你）。
+        NSRemindersFullAccessUsageDescription: Bot 帮你查提醒事项、加提醒（加之前会问你）。
+        NSPhotoLibraryAddUsageDescription: 保存 Bot 发给你的图片。
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.lllhr94.dsbot

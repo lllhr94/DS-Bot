@@ -1,4 +1,4 @@
-import DSLink
+import AgentKit
 import SwiftUI
 
 /// One row of a chat.
@@ -11,21 +11,20 @@ struct ChatLine: Identifiable, Equatable {
     var text: String
     /// A steps row that is still running.
     var live = false
-    /// Set on a message this phone sent that the computer has not shown back yet.
     var local: Local?
     /// In a group: the Bot that said it.
     var speaker: String?
     var speakerName: String?
-    /// Photos picked on this phone, shown until the computer has them.
+    /// Photos picked on this phone and not kept yet.
     var images: [Data] = []
-    /// How many photos the message carries, and where the computer keeps them.
+    /// How many photos the message carries, and their files.
     var photos = 0
     var refs: [String] = []
     /// A steps row: what was done, in order.
     var tools: [String] = []
 }
 
-/// The chat with one Bot: reads it, keeps it live, sends into it.
+/// The chat with one Bot or one group: shows it, keeps it live, sends into it.
 @MainActor
 final class ChatModel: ObservableObject {
     @Published private(set) var lines: [ChatLine] = []
@@ -44,7 +43,6 @@ final class ChatModel: ObservableObject {
     @Published private(set) var demoWorking = false
     @Published var error: String?
 
-    /// The pages before the newest one, oldest first.
     @Published private(set) var earlier: [ChatLine] = []
     @Published private(set) var hasEarlier = false
     @Published private(set) var loadingEarlier = false
@@ -53,24 +51,22 @@ final class ChatModel: ObservableObject {
     let bot: BotInfo
     /// Set when this is a group chat.
     let roomId: String?
+    /// Where the team keeps this chat.
+    let key: String
+    var sessionId: String { key }
+
     private let team: TeamModel
-    private(set) var sessionId: String
-    private var cursor: Any?
-    /// How the computer will show each sent message back.
-    private var echo: [String: String] = [:]
     private var feed: UUID?
-    private var poll: Task<Void, Never>?
     private var demoReply: Task<Void, Never>?
-    private var reading = false
-    private var again = false
-    private var attempts: [(id: String, text: String, done: Bool)] = []
+    /// How many kept messages are on screen.
+    private var limit = 160
+    /// The tool running now, before its result is kept.
+    private var running: String?
     /// Everything received of the reply being written; `streaming` follows it at an even pace.
     private var target = ""
     private var shown = 0
     private var finalCount = 0
     private var typing: Task<Void, Never>?
-    /// For each sent message, the rows the chat held when the computer took it.
-    private var known: [String: Set<String>] = [:]
 
     private var demo: Bool { team.phase == .demo }
 
@@ -78,7 +74,7 @@ final class ChatModel: ObservableObject {
         self.bot = bot
         self.team = team
         roomId = nil
-        sessionId = bot.sessionId ?? bot.id
+        key = TeamModel.key(bot: bot.id)
     }
 
     init(room: RoomInfo, team: TeamModel) {
@@ -86,30 +82,24 @@ final class ChatModel: ObservableObject {
         bot = BotInfo(id: room.id, name: room.name, color: first?.color)
         self.team = team
         roomId = room.id
-        sessionId = room.sessionId ?? room.id
+        key = TeamModel.key(room: room.id)
     }
 
     func open() {
         guard feed == nil else { return }
         if demo {
-            lines = Self.demoLines(for: bot)
+            if !loaded { lines = Self.demoLines(for: bot) }
             loaded = true
             return
         }
-        feed = team.listen { [weak self] name, data in self?.hear(name, data) }
-        poll = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.refresh()
-                try? await Task.sleep(nanoseconds: 20_000_000_000)
-            }
-        }
+        feed = team.listen(key) { [weak self] event in self?.hear(event) }
+        lines = build(team.history(key))
+        loaded = true
     }
 
     func close() {
         if let feed { team.unlisten(feed) }
         feed = nil
-        poll?.cancel()
-        poll = nil
         demoReply?.cancel()
         typing?.cancel()
         typing = nil
@@ -149,200 +139,132 @@ final class ChatModel: ObservableObject {
 
     // MARK: Reading
 
-    /// One read at a time; a burst of messages becomes one read and one more after it.
     func refresh() async {
-        if demo { return }
-        if reading { again = true; return }
-        reading = true
-        defer { reading = false }
-        repeat {
-            again = false
-            do {
-                let page = try await read(cursor: nil)
-                if let id = page["sessionId"] as? String { sessionId = id }
-                if !loaded {
-                    cursor = page["cursor"]
-                    hasEarlier = cursor != nil && !(cursor is NSNull)
-                }
-                apply(Self.lines(from: page["items"] as? [Any] ?? []))
-                loaded = true
-            } catch let failure as LinkError {
-                // Being offline is the link's state, shown on the home screen; the reconnect reads again.
-                if failure.code != "link/offline", failure.code != "TRANSPORT_CLOSED" { error = "读不到对话：\(failure.message)" }
-            } catch {
-                self.error = "读不到对话，稍后会再试。"
-            }
-        } while again && !Task.isCancelled
+        guard !demo else { return }
+        apply(build(team.history(key)))
     }
 
-    private func read(cursor: Any?) async throws -> [String: Any] {
-        var payload: [String: Any] = ["steps": true]
-        if let roomId { payload["roomId"] = roomId } else { payload["botId"] = bot.id }
-        if let cursor { payload["cursor"] = cursor }
-        return try await team.call(roomId == nil ? "chat" : "room-chat", payload)
-    }
-
-    /// Reads the page before the oldest one shown.
     func loadEarlier() async {
-        guard hasEarlier, !loadingEarlier, let cursor, !(cursor is NSNull) else { return }
+        guard hasEarlier, !loadingEarlier else { return }
         loadingEarlier = true
-        defer { loadingEarlier = false }
-        guard let page = try? await read(cursor: cursor) else { return }
-        self.cursor = page["cursor"]
-        hasEarlier = self.cursor != nil && !(self.cursor is NSNull)
-        let shown = Set((earlier + lines).map(\.id))
-        let older = Self.lines(from: page["items"] as? [Any] ?? []).filter { !shown.contains($0.id) }
-        earlier = older + earlier
+        limit += 160
+        lines = build(team.history(key))
+        loadingEarlier = false
+    }
+
+    /// The kept messages as rows: what the user said, what the Bot said, and the steps between.
+    private func build(_ all: [Entry]) -> [ChatLine] {
+        hasEarlier = all.count > limit
+        var out: [ChatLine] = []
+        var open: Int?
+        for entry in all.suffix(limit) {
+            let message = entry.message
+            if entry.note == true {
+                out.append(ChatLine(id: entry.id, kind: .note, text: message.text))
+                open = nil
+                continue
+            }
+            switch message.role {
+            case .user:
+                var line = ChatLine(id: entry.id, kind: .user, text: message.text.trimmingCharacters(in: .whitespacesAndNewlines))
+                line.photos = entry.photos.count
+                line.refs = entry.photos
+                out.append(line)
+                open = nil
+            case .assistant:
+                if !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    out.append(ChatLine(id: entry.id, kind: .bot, text: message.text, speaker: entry.speaker))
+                    open = nil
+                }
+                if !message.toolCalls.isEmpty, open == nil {
+                    out.append(ChatLine(id: "steps-\(entry.id)", kind: .steps, text: ""))
+                    open = out.count - 1
+                }
+            case .tool:
+                if open == nil {
+                    out.append(ChatLine(id: "steps-\(entry.id)", kind: .steps, text: ""))
+                    open = out.count - 1
+                }
+                let label = entry.label ?? message.toolName ?? "一步"
+                out[open!].tools.append(message.isError ? "\(label)（没成功）" : label)
+            }
+        }
+        let working = team.isWorking(key)
+        if working, let open, open == out.count - 1 {
+            out[open].live = true
+            if let running { out[open].tools.append(running) }
+        }
+        for index in out.indices where out[index].kind == .steps {
+            let count = out[index].tools.count
+            out[index].text = out[index].live ? (count > 0 ? "正在干活，第 \(count) 步" : "正在干活") : "完成 \(count) 步"
+        }
+        return out
     }
 
     private func apply(_ next: [ChatLine]) {
-        let hadStream = !streaming.isEmpty
-        let lastReply = lines.last(where: { $0.kind == .bot })?.id
-        let reply = next.last(where: { $0.kind == .bot })
-        let newReply = loaded && reply != nil && reply?.id != lastReply
-        // A finished reply stays on screen until the chat holds it, so nothing blinks.
-        if newReply { attempts.removeAll { $0.done } }
-        target = attempts.map(\.text).joined()
-        var nextStream = streaming
-        var nextFresh = fresh
-        if hadStream, target.isEmpty, newReply, let reply {
-            // The written-out row takes over exactly where the streaming one stood.
-            finalCount = reply.text.count
-            nextFresh = Fresh(id: reply.id, shown: shown < finalCount ? shown : nil)
-            nextStream = ""
-        } else if target.isEmpty {
-            nextStream = ""
+        let grew = next.count > lines.count
+        if lines != next {
+            if loaded && grew && streaming.isEmpty {
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) { lines = next }
+            } else {
+                lines = next
+            }
         }
-        let shownBack = pending.filter { local in
-            guard let before = known[local.id] else { return false }
-            return next.contains { $0.kind == .user && !before.contains($0.id) && Self.same($0.text, local.text) && $0.photos == local.images.count }
-        }
-        let nextPending = pending.filter { local in !shownBack.contains { $0.id == local.id } }
-        for local in shownBack { known[local.id] = nil; echo[local.id] = nil }
-        let grew = next.count + nextPending.count > lines.count + pending.count
-        let change = {
-            if self.lines != next { self.lines = next }
-            if self.pending != nextPending { self.pending = nextPending }
-            if self.streaming != nextStream { self.streaming = nextStream }
-            if self.fresh != nextFresh { self.fresh = nextFresh }
-        }
-        if loaded && grew && !hadStream && shownBack.isEmpty {
-            withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) { change() }
-        } else {
-            change()
-        }
-        if nextFresh?.shown != nil { type() }
-        if newReply { Haptics.tick(0.6) }
     }
 
     private static func same(_ left: String, _ right: String) -> Bool {
         left.trimmingCharacters(in: .whitespacesAndNewlines) == right.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// The computer's chat items as rows. Rows keep the same id when the chat grows.
-    private static func lines(from items: [Any]) -> [ChatLine] {
-        var seen: [String: Int] = [:]
-        var out: [ChatLine] = []
-        for case let item as [String: Any] in items {
-            guard let kind = item["kind"] as? String else { continue }
-            let order = (item["seq"] as? NSNumber)?.stringValue
-                ?? (item["time"] as? NSNumber)?.stringValue
-                ?? (kind == "steps" ? "t\((item["turn"] as? NSNumber)?.stringValue ?? "")" : "")
-            let base = "\(kind)-\(order)"
-            let count = seen[base, default: 0]
-            seen[base] = count + 1
-            let id = count == 0 ? base : "\(base)#\(count)"
-            let text = (item["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            switch kind {
-            case "user":
-                let refs = (item["imageRefs"] as? [[String: Any]] ?? []).compactMap { $0["attachmentId"] as? String }
-                let photos = max((item["images"] as? NSNumber)?.intValue ?? 0, refs.count)
-                if !text.isEmpty || photos > 0 {
-                    var line = ChatLine(id: id, kind: .user, text: text)
-                    line.photos = photos
-                    line.refs = refs
-                    out.append(line)
-                }
-            case "bot":
-                if !text.isEmpty {
-                    out.append(ChatLine(id: id, kind: .bot, text: text, speaker: item["botId"] as? String, speakerName: item["name"] as? String))
-                }
-            case "steps":
-                let tools = (item["tools"] as? [Any])?.count ?? 0
-                let live = item["live"] as? Bool == true
-                if tools > 0 || live {
-                    var line = ChatLine(id: id, kind: .steps, text: live ? (tools > 0 ? "正在干活，已做 \(tools) 步" : "正在干活") : "完成 \(tools) 步", live: live)
-                    line.tools = (item["tools"] as? [[String: Any]] ?? []).compactMap { tool in
-                        guard let label = (tool["label"] as? String) ?? (tool["name"] as? String), !label.isEmpty else { return nil }
-                        return tool["ok"] as? Bool == false ? "\(label)（没成功）" : label
-                    }
-                    out.append(line)
-                }
-            case "event", "divider":
-                if !text.isEmpty { out.append(ChatLine(id: id, kind: .note, text: text)) }
-            default:
-                break
-            }
-        }
-        return out
-    }
+    // MARK: Live
 
-    /// A message's text with a note for the photos sent along.
-    private static func withPhotos(_ text: String, _ count: Int) -> String {
-        count > 0 ? (text.isEmpty ? "［图片 ×\(count)］" : "\(text)\n［图片 ×\(count)］") : text
-    }
-
-    // MARK: Live events
-
-    private func hear(_ name: String, _ data: [String: Any]) {
-        guard data["sessionId"] as? String == sessionId else { return }
-        switch name {
-        case "message":
-            Task { await refresh() }
-        case "stream":
-            let id = (data["attemptId"] as? String) ?? (data["attemptId"] as? NSNumber)?.stringValue ?? ""
-            let phase = data["phase"] as? String
-            if phase == "start" {
-                attempts.removeAll { $0.id == id || $0.done }
-                attempts.append((id, "", false))
-                if attempts.count == 1 { shown = 0; fresh = nil }
-            } else if let text = data["text"] as? String {
-                if let index = attempts.firstIndex(where: { $0.id == id }) {
-                    attempts[index].text += text
-                } else {
-                    attempts.append((id, text, false))
-                }
-            } else if phase == "end" {
-                if let index = attempts.firstIndex(where: { $0.id == id }) { attempts[index].done = true }
-                // The finished text normally leaves when the chat shows it; this is the fallback.
-                Task { [weak self] in
-                    await self?.refresh()
-                    try? await Task.sleep(nanoseconds: 4_000_000_000)
-                    self?.dropFinished()
-                }
-            }
-            target = attempts.map(\.text).joined()
+    private func hear(_ event: TurnEvent) {
+        switch event {
+        case .text(let piece):
             if fresh?.shown != nil { fresh?.shown = nil }
+            if target.isEmpty { shown = 0 }
+            target += piece
             type()
-        default:
-            break
+        case .tool(let label):
+            running = label
+            apply(build(team.history(key)))
+        case .changed:
+            let all = team.history(key)
+            if all.last?.message.role == .tool { running = nil }
+            let next = build(all)
+            let known = Set(lines.map(\.id))
+            if !target.isEmpty, let reply = next.last(where: { $0.kind == .bot }), !known.contains(reply.id), Self.same(reply.text, target) {
+                // The kept row takes over exactly where the streaming one stood.
+                finalCount = reply.text.count
+                fresh = Fresh(id: reply.id, shown: shown < finalCount ? shown : nil)
+                target = ""
+                streaming = ""
+                lines = next
+                if fresh?.shown != nil { type() }
+                Haptics.tick(0.6)
+            } else {
+                if all.last?.note == true {
+                    target = ""
+                    streaming = ""
+                }
+                apply(next)
+            }
+        case .finished:
+            running = nil
+            if !target.isEmpty {
+                target = ""
+                streaming = ""
+            }
+            apply(build(team.history(key)))
+        case .failed(let message):
+            withAnimation(.smooth) { error = message }
+            Haptics.lock()
         }
     }
 
-    private func dropFinished() {
-        guard attempts.contains(where: { $0.done }) else { return }
-        attempts.removeAll { $0.done }
-        target = attempts.map(\.text).joined()
-        if target.isEmpty { streaming = "" }
-    }
-
-    /// A photo kept on the computer, as image data. `preview` asks for the small one.
-    func photo(_ attachmentId: String, preview: Bool) async -> Data? {
-        var payload: [String: Any] = ["sessionId": sessionId, "attachmentId": attachmentId]
-        if preview { payload["preview"] = true }
-        guard let answer = try? await team.call("image", payload, timeout: 60),
-              let text = answer["data"] as? String else { return nil }
-        return Data(base64Encoded: text)
+    /// A kept photo. `preview` is ignored: the phone has the whole photo.
+    func photo(_ name: String, preview: Bool) async -> Data? {
+        Disk.photo(name)
     }
 
     // MARK: Sending
@@ -350,73 +272,25 @@ final class ChatModel: ObservableObject {
     func send(_ text: String, photos: [Data] = []) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !photos.isEmpty else { return }
-        error = nil
+        withAnimation(.smooth) { error = nil }
         if demo { sendDemo(Self.withPhotos(trimmed, photos.count)); return }
-        var local = ChatLine(id: "local-\(UUID().uuidString)", kind: .user, text: trimmed, local: .sending)
-        local.images = photos
-        echo[local.id] = Self.withPhotos(trimmed, photos.count)
-        let sent = local
-        withAnimation(.spring(response: 0.38, dampingFraction: 0.72)) { pending.append(sent) }
-        Task { await deliver(sent.id) }
+        if team.isWorking(key), !target.isEmpty {
+            target = ""
+            streaming = ""
+        }
+        team.send(trimmed, photos: photos, to: key)
     }
 
-    /// Tries a failed message again.
-    func retry(_ id: String) {
-        guard let index = pending.firstIndex(where: { $0.id == id }) else { return }
-        pending[index].local = .sending
-        error = nil
-        Task { await deliver(id) }
-    }
+    func retry(_ id: String) {}
 
     func discard(_ id: String) {
         withAnimation(.smooth) { pending.removeAll { $0.id == id } }
-        known[id] = nil
-        echo[id] = nil
     }
 
-    /// Answers the question a Bot asked in this chat.
+    /// Answers the question a Bot asked: the answer goes in as a message.
     func answer(_ question: Question, selected: [String], custom: String) {
-        error = nil
-        Task {
-            do {
-                _ = try await team.call("answer-question", [
-                    "sessionId": sessionId,
-                    "questionId": question.id,
-                    "answer": ["selected": selected, "custom": custom.trimmingCharacters(in: .whitespacesAndNewlines)],
-                ])
-                Haptics.tick(0.8)
-                await refresh()
-            } catch {
-                self.error = "回答没送到，这个问题可能已经关了。"
-                Haptics.lock()
-            }
-        }
-    }
-
-    private func deliver(_ id: String) async {
-        guard let local = pending.first(where: { $0.id == id }) else { return }
-        do {
-            // Photos go up one by one first; the message then names them.
-            var staged: [String] = []
-            for photo in local.images {
-                let answer = try await team.call("stage-image", ["mediaType": "image/jpeg", "data": photo.base64EncodedString()], timeout: 90)
-                if let id = answer["id"] as? String { staged.append(id) }
-            }
-            var payload: [String: Any] = ["sessionId": sessionId, "text": local.text]
-            if !staged.isEmpty { payload["images"] = staged }
-            _ = try await team.call("send", payload, timeout: 60)
-            known[id] = Set(lines.map(\.id))
-            await refresh()
-        } catch {
-            if let index = pending.firstIndex(where: { $0.id == id }) {
-                withAnimation(.smooth) { pending[index].local = .failed }
-            }
-            let code = (error as? LinkError)?.code
-            self.error = code == "link/offline" || code == "TRANSPORT_CLOSED" || code == "RPC_TIMEOUT"
-                ? "没发出去：还没连上电脑。"
-                : "没发出去：\((error as? LinkError)?.message ?? "出错了")"
-            Haptics.lock()
-        }
+        let text = (selected + [custom.trimmingCharacters(in: .whitespacesAndNewlines)]).filter { !$0.isEmpty }.joined(separator: "，")
+        send(text)
     }
 
     func stop() {
@@ -425,13 +299,11 @@ final class ChatModel: ObservableObject {
             demoWorking = false
             return
         }
-        Task {
-            if let roomId {
-                _ = try? await team.call("stop-room-work", ["roomId": roomId])
-            } else {
-                _ = try? await team.call("stop-chat", ["botId": bot.id])
-            }
-        }
+        team.stop(key)
+    }
+
+    private static func withPhotos(_ text: String, _ count: Int) -> String {
+        count > 0 ? (text.isEmpty ? "［图片 ×\(count)］" : "\(text)\n［图片 ×\(count)］") : text
     }
 
     // MARK: Demo
@@ -444,10 +316,9 @@ final class ChatModel: ObservableObject {
         demoReply = Task { [weak self] in
             self?.demoWorking = true
             try? await Task.sleep(nanoseconds: 900_000_000)
-            let reply = "这是演示团队，我还没有连到真的电脑。扫码连上你的电脑之后，这里就是 Bot 真正的回答：它会一边想一边写，像现在这样一个字一个字出来。"
+            let reply = "这是演示，我还没有接上模型。到设置里填一个 DeepSeek 或 Claude 的密钥，我就能真的回答你：一边想一边写，像现在这样一个字一个字冒出来。"
             self?.shown = 0
             self?.fresh = nil
-            // Bursts, the way a real computer sends them.
             var rest = Substring(reply)
             while !rest.isEmpty, !Task.isCancelled {
                 let burst = rest.prefix(Int.random(in: 4...14))
@@ -476,9 +347,9 @@ final class ChatModel: ObservableObject {
 
     private static func demoLines(for bot: BotInfo) -> [ChatLine] {
         [
-            ChatLine(id: "d1", kind: .user, text: "把这周的工作整理成周报，重点写上线进度"),
-            ChatLine(id: "d2", kind: .steps, text: "完成 4 步"),
-            ChatLine(id: "d3", kind: .bot, text: "周报写好了，分三部分：\n\n- **本周完成的事**\n- **上线进度和卡点**\n- 下周计划\n\n文件放在工作区的 `周报.md` 里。"),
+            ChatLine(id: "d1", kind: .user, text: "这周六想和朋友去磁器口，帮我看看天气，顺便记进日历"),
+            ChatLine(id: "d2", kind: .steps, text: "完成 3 步", tools: ["搜索：重庆 周六 天气", "读网页：weather.com.cn", "新建日程：去磁器口"]),
+            ChatLine(id: "d3", kind: .bot, text: "周六重庆**多云转小雨**，14–19 度，记得带伞 ☂️\n\n- 日程已经加好：周六 10:00 磁器口\n- 出门前一小时提醒你\n\n来源：中国天气网"),
         ]
     }
 }
