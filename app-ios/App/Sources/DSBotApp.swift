@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct DSBotApp: App {
     @StateObject private var model = AppModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -26,6 +27,9 @@ struct DSBotApp: App {
             }
             .preferredColorScheme(.light)
             .fontDesign(.rounded)
+            .onChange(of: scenePhase) {
+                if scenePhase == .active { model.team.wake() }
+            }
         }
     }
 }

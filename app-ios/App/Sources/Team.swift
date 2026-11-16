@@ -106,14 +106,40 @@ final class TeamModel: ObservableObject {
     private var refreshing = false
     private var refreshAgain = false
     private var client: LinkClient?
+    private var paired: (LinkIdentity, PairedHost)?
     private var feeds: [UUID: @MainActor (String, [String: Any]) -> Void] = [:]
 
     var approvals: [Approval] { work.approvals ?? [] }
 
     func start(identity: LinkIdentity, host: PairedHost) {
         stop()
+        paired = (identity, host)
         hostName = host.name
         phase = .connecting
+        connect(identity: identity, host: host)
+    }
+
+    /// Called when the app comes back to the front. iOS may have cut the link while the app
+    /// slept without telling it, so this checks the link and starts a new one if it is dead.
+    /// The team stays on screen meanwhile.
+    func wake() {
+        guard let paired, phase != .demo, phase != .unpaired, phase != .connecting else { return }
+        let again = { [weak self] in
+            guard let self else { return }
+            self.loop?.cancel()
+            self.client = nil
+            // The computer sends the whole team to a new link.
+            self.revision = -1
+            self.liveKey = nil
+            self.connect(identity: paired.0, host: paired.1)
+        }
+        guard client != nil else { again(); return }
+        Task {
+            do { _ = try await call("hello", [:], timeout: 5) } catch { again() }
+        }
+    }
+
+    private func connect(identity: LinkIdentity, host: PairedHost) {
         loop = Task { [weak self] in
             var delay = 1.0
             while !Task.isCancelled {
@@ -179,6 +205,7 @@ final class TeamModel: ObservableObject {
         loop?.cancel()
         loop = nil
         client = nil
+        paired = nil
         raw = [:]
         revision = -1
         liveKey = nil
