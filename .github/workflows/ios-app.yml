@@ -10,6 +10,10 @@ on:
       - app-ios/**
       - .github/workflows/ios-app.yml
   workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner label (macos-latest, or macos-15-intel when the arm64 machines are busy)
+        default: macos-latest
 
 permissions:
   contents: write
@@ -17,7 +21,7 @@ permissions:
 jobs:
   build:
     name: Native app (iOS, unsigned)
-    runs-on: macos-latest
+    runs-on: ${{ inputs.runner || 'macos-latest' }}
     timeout-minutes: 40
     defaults:
       run:
@@ -25,6 +29,12 @@ jobs:
         working-directory: app-ios/App
     steps:
       - uses: actions/checkout@v4
+
+      - name: Use Xcode 26
+        run: |
+          XC=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$XC" ]; then sudo xcode-select -s "$XC"; fi
+          xcodebuild -version
 
       - name: Test the engine (AgentKit)
         working-directory: app-ios/AgentKit
