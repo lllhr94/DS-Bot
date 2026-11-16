@@ -5,7 +5,7 @@ struct Aurora: View {
     var seed: Double
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+        TimelineView(.animation(minimumInterval: 1.0 / 15.0)) { context in
             let t = context.date.timeIntervalSinceReferenceDate * 0.12 + seed
             let a = Float(sin(t)) * 0.08
             let b = Float(cos(t * 0.8)) * 0.08

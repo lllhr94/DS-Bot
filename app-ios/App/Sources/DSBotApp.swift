@@ -25,6 +25,7 @@ struct DSBotApp: App {
                 }
             }
             .preferredColorScheme(.light)
+            .fontDesign(.rounded)
         }
     }
 }

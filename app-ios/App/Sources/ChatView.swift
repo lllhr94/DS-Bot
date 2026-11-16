@@ -73,6 +73,7 @@ struct ChatView: View {
         .safeAreaInset(edge: .top, spacing: 0) { header }
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
         .preferredColorScheme(.light)
+        .fontDesign(.rounded)
         .onAppear {
             Haptics.prepare()
             chat.open()
@@ -99,7 +100,9 @@ struct ChatView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("返回")
-            Face(color: Color.shade(tone, amount: 0.95, lift: 0.1), size: 40)
+            Face(tone: tone, size: 34, mood: working ? .busy : .happy, ears: Ears.of(bot.name))
+                .padding(.top, 8)
+                .padding(.horizontal, 3)
             VStack(alignment: .leading, spacing: 1) {
                 Text(bot.name)
                     .font(.system(size: 17, weight: .bold))
@@ -220,8 +223,7 @@ struct ChatView: View {
 
     private var empty: some View {
         VStack(spacing: 14) {
-            Face(color: Color.shade(tone, amount: 0.95, lift: 0.1), size: 84)
-                .shadow(color: Color.shade(tone, amount: 0.6).opacity(0.3), radius: 16, y: 12)
+            Face(tone: tone, size: 96, ears: Ears.of(bot.name))
             Text("跟\(bot.name)说点什么吧")
                 .font(.system(size: 20, weight: .heavy))
                 .foregroundStyle(Color(hex: 0x0B0B0F))

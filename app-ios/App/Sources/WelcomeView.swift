@@ -9,14 +9,14 @@ private struct Hang {
     let blur: CGFloat
 }
 
-private let ready = Color(hex: 0x7CF0B8)
-private let busy = Color(hex: 0xFFD98A)
+private let ready = Color(hex: 0x34C98A)
+private let busy = Color(hex: 0xF5A623)
 
 private let hangs: [Hang] = [
     Hang(look: BadgeLook(name: "写手", role: "写文档 · 改稿子", status: "空闲", light: ready, tone: 0xC9670F), x: 0.07, strap: 74, scale: 0.68, blur: 3),
-    Hang(look: BadgeLook(name: "运维", role: "看服务 · 跑命令", status: "等你批准", light: busy, tone: 0x0E9684), x: 0.90, strap: 50, scale: 0.66, blur: 2.5),
+    Hang(look: BadgeLook(name: "运维", role: "看服务 · 跑命令", status: "等你批准", light: busy, tone: 0x0E9684, mood: .asking), x: 0.90, strap: 50, scale: 0.66, blur: 2.5),
     Hang(look: BadgeLook(name: "主管", role: "分派任务 · 管理团队", status: "随时待命", light: ready, tone: 0x5563E6), x: 0.27, strap: 156, scale: 1, blur: 0),
-    Hang(look: BadgeLook(name: "调研", role: "查资料 · 逛网页", status: "正在干活", light: busy, tone: 0xD3458B), x: 0.73, strap: 268, scale: 1, blur: 0),
+    Hang(look: BadgeLook(name: "调研", role: "查资料 · 逛网页", status: "正在干活", light: Color(hex: 0x5B8DEF), tone: 0xD3458B, mood: .busy), x: 0.73, strap: 268, scale: 1, blur: 0),
 ]
 
 struct WelcomeView: View {
@@ -111,7 +111,7 @@ private struct HangingBadge: View {
     var body: some View {
         VStack(spacing: 0) {
             Rectangle()
-                .fill(LinearGradient(colors: [Color(hex: 0x1B1B22), Color(hex: 0x3A3A48)], startPoint: .top, endPoint: .bottom))
+                .fill(LinearGradient(colors: [Color.shade(hang.look.tone, lift: 0.25), Color.shade(hang.look.tone, lift: 0.45)], startPoint: .top, endPoint: .bottom))
                 .frame(width: 12, height: hang.strap)
             RoundedRectangle(cornerRadius: 4, style: .continuous)
                 .fill(LinearGradient(colors: [Color(hex: 0xE3E5EC), Color(hex: 0xB9BDCA)], startPoint: .top, endPoint: .bottom))

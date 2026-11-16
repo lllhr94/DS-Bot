@@ -115,6 +115,7 @@ struct ApproveView: View {
             }
         }
         .preferredColorScheme(.light)
+        .fontDesign(.rounded)
         .onAppear {
             Haptics.prepare()
             withAnimation(.spring(response: 0.6, dampingFraction: 0.72).delay(0.1)) { shown = true }
@@ -184,7 +185,8 @@ struct ApproveView: View {
             .foregroundStyle(Color(hex: 0x4A4A55))
 
             HStack(spacing: 12) {
-                Face(color: Color.shade(BadgeLook.tone(named: bot?.color), amount: 0.95, lift: 0.1), size: 48)
+                Face(tone: BadgeLook.tone(named: bot?.color), size: 46, mood: verdict == nil ? .asking : .happy, ears: Ears.of(name))
+                    .padding(.top, 8)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("申请人").font(.system(size: 13)).foregroundStyle(Color(hex: 0x4A4A55))
                     Text(name).font(.system(size: 20, weight: .heavy)).lineLimit(1)

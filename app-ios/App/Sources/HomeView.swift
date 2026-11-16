@@ -186,7 +186,8 @@ struct HomeView: View {
                             role: (bot.role?.isEmpty == false ? bot.role : nil) ?? (team.isMain(bot) ? "主 Bot" : "Bot"),
                             status: status.text,
                             light: status.light,
-                            tone: BadgeLook.tone(named: bot.color)
+                            tone: BadgeLook.tone(named: bot.color),
+                            mood: team.phase == .offline || team.phase == .connecting ? .sleepy : Mood.of(status.text)
                         )
                         let tilt = [-2.0, 1.5, -1.0, 2.0][index % 4]
                         Button {
@@ -197,14 +198,19 @@ struct HomeView: View {
                                 opened = bot
                             }
                         } label: {
+                            // The source is the card itself, clipped to its own corners, so nothing shows around it while it zooms.
                             BadgeCard(look: look)
+                                .matchedTransitionSource(id: bot.id, in: zoom) { source in
+                                    source
+                                        .background(.clear)
+                                        .clipShape(RoundedRectangle(cornerRadius: BadgeCard.corner, style: .continuous))
+                                }
                                 .scaleEffect(0.86)
                                 .frame(width: 134, height: 180)
-                                .matchedTransitionSource(id: bot.id, in: zoom)
                         }
                         .buttonStyle(.plain)
                         .rotationEffect(.degrees(poked == bot.id ? tilt * 3 : tilt))
-                        .scaleEffect(poked == bot.id ? 0.94 : 1)
+                        .scaleEffect(x: poked == bot.id ? 1.07 : 1, y: poked == bot.id ? 0.9 : 1, anchor: .bottom)
                         .offset(y: shown ? (index % 2 == 0 ? 0 : 8) : 60)
                         .opacity(shown ? 1 : 0)
                         .animation(.spring(response: 0.6, dampingFraction: 0.68).delay(0.08 * Double(min(index, 6))), value: shown)
@@ -225,15 +231,10 @@ struct HomeView: View {
         HStack(spacing: 12) {
             ZStack {
                 let members: [BotInfo] = (room.members ?? []).compactMap { id in team.bots.first { $0.id == id } }
-                Circle()
-                    .fill(Color.shade(BadgeLook.tone(named: members.first?.color), amount: 0.84))
-                    .frame(width: 30, height: 30)
-                    .offset(x: -8, y: -8)
-                Circle()
-                    .fill(Color.shade(BadgeLook.tone(named: members.count > 1 ? members[1].color : "magenta"), amount: 0.84))
-                    .frame(width: 30, height: 30)
-                    .overlay(Circle().strokeBorder(.white, lineWidth: 2))
-                    .offset(x: 8, y: 8)
+                Face(tone: BadgeLook.tone(named: members.first?.color), size: 28, ears: Ears.of(members.first?.name ?? ""))
+                    .offset(x: -9, y: -4)
+                Face(tone: BadgeLook.tone(named: members.count > 1 ? members[1].color : "magenta"), size: 28, ears: Ears.of(members.count > 1 ? members[1].name : "群"))
+                    .offset(x: 9, y: 10)
             }
             .frame(width: 46, height: 46)
             .accessibilityHidden(true)

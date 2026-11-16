@@ -284,11 +284,11 @@ final class TeamModel: ObservableObject {
 
     /// What a Bot is up to, in a few words, and the color of its light.
     func status(of bot: BotInfo) -> (text: String, light: Color) {
-        if bot.blocked != nil { return ("需要处理", Color(hex: 0xFF9A8F)) }
-        if approvals.contains(where: { $0.botId == bot.id }) { return ("等你批准", Color(hex: 0xFFD98A)) }
-        if waitingForAnswer.contains(bot.sessionId ?? bot.id) { return ("等你回答", Color(hex: 0xFFD98A)) }
-        if work.bots?[bot.id] != nil { return ("正在干活", .white) }
-        return ("空闲", Color(hex: 0x7CF0B8))
+        if bot.blocked != nil { return ("需要处理", Color(hex: 0xF0616D)) }
+        if approvals.contains(where: { $0.botId == bot.id }) { return ("等你批准", Color(hex: 0xF5A623)) }
+        if waitingForAnswer.contains(bot.sessionId ?? bot.id) { return ("等你回答", Color(hex: 0xF5A623)) }
+        if work.bots?[bot.id] != nil { return ("正在干活", Color(hex: 0x5B8DEF)) }
+        return ("空闲", Color(hex: 0x34C98A))
     }
 
     // MARK: Demo

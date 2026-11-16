@@ -17,9 +17,10 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: Bot 团队
-        CFBundleShortVersionString: "0.4"
-        CFBundleVersion: "5"
+        CFBundleShortVersionString: "0.5"
+        CFBundleVersion: "6"
         UILaunchScreen: {}
+        CADisableMinimumFrameDurationOnPhone: true
         UIRequiresFullScreen: true
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         NSCameraUsageDescription: 用相机扫描电脑上的配对二维码。
