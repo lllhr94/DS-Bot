@@ -102,7 +102,7 @@ struct CalendarAddTool: AgentTool {
             "type": "object",
             "properties": [
                 "title": ["type": "string"],
-                "start": ["type": "string", "description": dateHint],
+                "start": ["type": "string", "description": .string(dateHint)],
                 "end": ["type": "string", "description": "结束时间，不写就是一小时后"],
                 "location": ["type": "string"],
                 "notes": ["type": "string"],

@@ -77,7 +77,7 @@ struct ApproveView: View {
                     }
                     slip
                         .scaleEffect(1 - 0.035 * press)
-                        .rotationEffect(.degrees(-4 - 2.0 * press))
+                        .rotationEffect(.degrees(Double(-4 - 2 * press)))
                         .offset(y: 12 * press)
                         .id(current.id)
                         .transition(.asymmetric(
