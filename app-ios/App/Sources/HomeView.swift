@@ -169,6 +169,14 @@ struct HomeView: View {
     }
 
     @ViewBuilder
+    /// Without the computer the Bots are asleep.
+    private var asleep: Bool {
+        switch team.phase {
+        case .online, .demo: return false
+        default: return true
+        }
+    }
+
     private var badges: some View {
         if team.bots.isEmpty {
             Text(team.phase == .online ? "这台电脑上还没有 Bot。" : "连上电脑后，Bot 会出现在这里。")
@@ -187,7 +195,7 @@ struct HomeView: View {
                             status: status.text,
                             light: status.light,
                             tone: BadgeLook.tone(named: bot.color),
-                            mood: team.phase == .offline || team.phase == .connecting ? .sleepy : Mood.of(status.text)
+                            mood: asleep ? .sleepy : Mood.of(status.text)
                         )
                         let tilt = [-2.0, 1.5, -1.0, 2.0][index % 4]
                         Button {
