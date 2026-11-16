@@ -9,6 +9,13 @@ struct HomeView: View {
     @State private var opened: BotInfo?
     @State private var approving: Approval?
     @State private var openedRoom: RoomInfo?
+    @State private var editing: Editing?
+
+    /// The Bot card open for editing; `bot` nil makes a new one.
+    private struct Editing: Identifiable {
+        let id: String
+        var bot: BotInfo?
+    }
     @Namespace private var zoom
 
     var body: some View {
@@ -59,6 +66,7 @@ struct HomeView: View {
                     .foregroundStyle(Color(hex: 0x0B0B0F))
                 Spacer()
                 Menu {
+                    Button("新建 Bot", systemImage: "plus") { editing = Editing(id: "new") }
                     if team.phase == .demo {
                         Button("退出演示", systemImage: "rectangle.portrait.and.arrow.right") { model.leave() }
                     } else {
@@ -73,6 +81,9 @@ struct HomeView: View {
                 .buttonBorderShape(.circle)
                 .controlSize(.large)
                 .accessibilityLabel("设置")
+                .sheet(item: $editing) { target in
+                    BotEditor(team: team, bot: target.bot)
+                }
             }
             HStack(spacing: 8) {
                 Circle().fill(chip.color).frame(width: 8, height: 8)
@@ -222,6 +233,10 @@ struct HomeView: View {
                                 .frame(width: 134, height: 180)
                         }
                         .buttonStyle(.plain)
+                        .contextMenu {
+                            Button("聊天", systemImage: "bubble.left") { opened = bot }
+                            Button("改资料", systemImage: "pencil") { editing = Editing(id: bot.id, bot: bot) }
+                        }
                         .rotationEffect(.degrees(poked == bot.id ? tilt * 3 : tilt))
                         .scaleEffect(x: poked == bot.id ? 1.07 : 1, y: poked == bot.id ? 0.9 : 1, anchor: .bottom)
                         .offset(y: shown ? (index % 2 == 0 ? 0 : 8) : 60)

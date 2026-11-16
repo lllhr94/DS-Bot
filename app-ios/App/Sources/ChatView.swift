@@ -11,6 +11,16 @@ struct ChatView: View {
     @State private var picks: [PhotosPickerItem] = []
     @State private var photos: [Data] = []
     @State private var chosen: Set<String> = []
+    @State private var unfolded: Set<String> = []
+    @State private var viewing: Viewing?
+    @State private var pickingPhotos = false
+    @State private var takingPhoto = false
+
+    /// The photo open full screen.
+    private struct Viewing: Identifiable {
+        let id: String
+        var local: Data?
+    }
 
     init(bot: BotInfo, team: TeamModel) {
         self.team = team
@@ -186,17 +196,31 @@ struct ChatView: View {
             VStack(alignment: .trailing, spacing: 4) {
                 if !line.images.isEmpty {
                     HStack(spacing: 6) {
-                        ForEach(Array(line.images.enumerated()), id: \.offset) { _, data in
+                        ForEach(Array(line.images.enumerated()), id: \.offset) { index, data in
                             if let image = UIImage(data: data) {
                                 Image(uiImage: image)
                                     .resizable()
                                     .scaledToFill()
                                     .frame(width: 84, height: 84)
                                     .clipShape(.rect(cornerRadius: 16))
+                                    .onTapGesture { viewing = Viewing(id: "\(line.id)-\(index)", local: data) }
                             }
                         }
                     }
                     .opacity(line.local == .sending ? 0.72 : 1)
+                } else if !line.refs.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(line.refs.prefix(4), id: \.self) { ref in
+                            RemotePhoto(chat: chat, attachmentId: ref)
+                                .frame(width: 84, height: 84)
+                                .clipShape(.rect(cornerRadius: 16))
+                                .onTapGesture { viewing = Viewing(id: ref) }
+                        }
+                    }
+                } else if line.photos > 0 {
+                    Text("［图片 ×\(line.photos)］")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color(hex: 0x4A4A55))
                 }
                 if !line.text.isEmpty {
                 Text(line.text)
@@ -253,6 +277,14 @@ struct ChatView: View {
                     removal: .opacity
                 ))
         case .steps:
+            VStack(alignment: .leading, spacing: 6) {
+            Button {
+                guard !line.tools.isEmpty else { return }
+                Haptics.tick(0.5)
+                withAnimation(.spring(response: 0.38, dampingFraction: 0.8)) {
+                    if unfolded.contains(line.id) { unfolded.remove(line.id) } else { unfolded.insert(line.id) }
+                }
+            } label: {
             HStack(spacing: 8) {
                 if line.live {
                     ProgressView().controlSize(.small)
@@ -265,11 +297,39 @@ struct ChatView: View {
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Color(hex: 0x1B1B22))
                     .contentTransition(.numericText())
+                if !line.tools.isEmpty {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Color(hex: 0x3A3A45))
+                        .rotationEffect(.degrees(unfolded.contains(line.id) ? 90 : 0))
+                }
             }
             .padding(.horizontal, 14)
             .frame(height: 36)
             .background(Color.white.opacity(0.55), in: .capsule)
             .overlay(Capsule().strokeBorder(Color.white.opacity(0.85), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            if unfolded.contains(line.id) {
+                VStack(alignment: .leading, spacing: 7) {
+                    ForEach(Array(line.tools.enumerated()), id: \.offset) { index, tool in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text("\(index + 1)")
+                                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                .foregroundStyle(Color(hex: 0x4A4A55))
+                                .frame(width: 20, alignment: .trailing)
+                            Text(tool)
+                                .font(.system(size: 14))
+                                .foregroundStyle(Color(hex: 0x1B1B22))
+                        }
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(Color.white.opacity(0.55), in: .rect(cornerRadius: 18))
+                .transition(.scale(scale: 0.9, anchor: .topLeading).combined(with: .opacity))
+            }
+            }
             .frame(maxWidth: .infinity, alignment: .leading)
             .transition(.opacity)
         case .note:
@@ -481,7 +541,10 @@ struct ChatView: View {
             }
             HStack(alignment: .bottom, spacing: 6) {
                 if question == nil {
-                    PhotosPicker(selection: $picks, maxSelectionCount: 4, matching: .images) {
+                    Menu {
+                        Button("拍一张", systemImage: "camera") { takingPhoto = true }
+                        Button("从相册选", systemImage: "photo.on.rectangle") { pickingPhotos = true }
+                    } label: {
                         Image(systemName: "plus")
                             .font(.system(size: 18, weight: .bold))
                             .foregroundStyle(Color(hex: 0x0B0B0F))
@@ -541,6 +604,16 @@ struct ChatView: View {
         .animation(.smooth, value: chat.error)
         .animation(.spring(response: 0.45, dampingFraction: 0.8), value: question)
         .animation(.smooth, value: photos.count)
+        .photosPicker(isPresented: $pickingPhotos, selection: $picks, maxSelectionCount: 4, matching: .images)
+        .fullScreenCover(isPresented: $takingPhoto) {
+            CameraPicker { data in
+                if let data, let small = Self.shrink(data), photos.count < 4 { photos.append(small) }
+            }
+            .ignoresSafeArea()
+        }
+        .fullScreenCover(item: $viewing) { shown in
+            PhotoViewer(chat: chat, attachmentId: shown.local == nil ? shown.id : nil, local: shown.local)
+        }
         .onChange(of: picks) {
             guard !picks.isEmpty else { return }
             let picked = picks

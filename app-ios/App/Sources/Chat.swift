@@ -18,6 +18,11 @@ struct ChatLine: Identifiable, Equatable {
     var speakerName: String?
     /// Photos picked on this phone, shown until the computer has them.
     var images: [Data] = []
+    /// How many photos the message carries, and where the computer keeps them.
+    var photos = 0
+    var refs: [String] = []
+    /// A steps row: what was done, in order.
+    var tools: [String] = []
 }
 
 /// The chat with one Bot: reads it, keeps it live, sends into it.
@@ -210,7 +215,7 @@ final class ChatModel: ObservableObject {
         }
         let shownBack = pending.filter { local in
             guard let before = known[local.id] else { return false }
-            return next.contains { $0.kind == .user && !before.contains($0.id) && Self.same($0.text, echo[local.id] ?? local.text) }
+            return next.contains { $0.kind == .user && !before.contains($0.id) && Self.same($0.text, local.text) && $0.photos == local.images.count }
         }
         let nextPending = pending.filter { local in !shownBack.contains { $0.id == local.id } }
         for local in shownBack { known[local.id] = nil; echo[local.id] = nil }
@@ -250,8 +255,14 @@ final class ChatModel: ObservableObject {
             let text = (item["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             switch kind {
             case "user":
-                let shownText = withPhotos(text, (item["images"] as? NSNumber)?.intValue ?? 0)
-                if !shownText.isEmpty { out.append(ChatLine(id: id, kind: .user, text: shownText)) }
+                let refs = (item["imageRefs"] as? [[String: Any]] ?? []).compactMap { $0["attachmentId"] as? String }
+                let photos = max((item["images"] as? NSNumber)?.intValue ?? 0, refs.count)
+                if !text.isEmpty || photos > 0 {
+                    var line = ChatLine(id: id, kind: .user, text: text)
+                    line.photos = photos
+                    line.refs = refs
+                    out.append(line)
+                }
             case "bot":
                 if !text.isEmpty {
                     out.append(ChatLine(id: id, kind: .bot, text: text, speaker: item["botId"] as? String, speakerName: item["name"] as? String))
@@ -260,7 +271,12 @@ final class ChatModel: ObservableObject {
                 let tools = (item["tools"] as? [Any])?.count ?? 0
                 let live = item["live"] as? Bool == true
                 if tools > 0 || live {
-                    out.append(ChatLine(id: id, kind: .steps, text: live ? (tools > 0 ? "正在干活，已做 \(tools) 步" : "正在干活") : "完成 \(tools) 步", live: live))
+                    var line = ChatLine(id: id, kind: .steps, text: live ? (tools > 0 ? "正在干活，已做 \(tools) 步" : "正在干活") : "完成 \(tools) 步", live: live)
+                    line.tools = (item["tools"] as? [[String: Any]] ?? []).compactMap { tool in
+                        guard let label = (tool["label"] as? String) ?? (tool["name"] as? String), !label.isEmpty else { return nil }
+                        return tool["ok"] as? Bool == false ? "\(label)（没成功）" : label
+                    }
+                    out.append(line)
                 }
             case "event", "divider":
                 if !text.isEmpty { out.append(ChatLine(id: id, kind: .note, text: text)) }
@@ -318,6 +334,15 @@ final class ChatModel: ObservableObject {
         attempts.removeAll { $0.done }
         target = attempts.map(\.text).joined()
         if target.isEmpty { streaming = "" }
+    }
+
+    /// A photo kept on the computer, as image data. `preview` asks for the small one.
+    func photo(_ attachmentId: String, preview: Bool) async -> Data? {
+        var payload: [String: Any] = ["sessionId": sessionId, "attachmentId": attachmentId]
+        if preview { payload["preview"] = true }
+        guard let answer = try? await team.call("image", payload, timeout: 60),
+              let text = answer["data"] as? String else { return nil }
+        return Data(base64Encoded: text)
     }
 
     // MARK: Sending

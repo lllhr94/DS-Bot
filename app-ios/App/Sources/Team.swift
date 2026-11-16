@@ -191,6 +191,33 @@ final class TeamModel: ObservableObject {
         return answer["value"] as? [String: Any] ?? [:]
     }
 
+    /// Saves a Bot's name, role and color; `id` nil makes a new Bot.
+    func saveBot(id: String?, name: String, role: String, color: String) async throws {
+        if phase == .demo {
+            if let index = bots.firstIndex(where: { $0.id == id }) {
+                bots[index].name = name
+                bots[index].role = role
+                bots[index].color = color
+            } else {
+                bots.append(BotInfo(id: UUID().uuidString, name: name, role: role, color: color))
+            }
+            return
+        }
+        var payload: [String: Any] = ["name": name, "role": role, "color": color]
+        if let id { payload["id"] = id }
+        _ = try await call(id == nil ? "create-bot" : "update-bot", payload, timeout: 60)
+        if let client { await refreshSoon(client) }
+    }
+
+    func deleteBot(_ id: String) async throws {
+        if phase == .demo {
+            bots.removeAll { $0.id == id }
+            return
+        }
+        _ = try await call("delete-bot", ["id": id], timeout: 60)
+        if let client { await refreshSoon(client) }
+    }
+
     /// Answers an approval: lets the Bot go ahead once, or turns it down.
     func answer(_ approval: Approval, allow: Bool) async throws {
         if phase == .demo {
