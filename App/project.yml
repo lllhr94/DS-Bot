@@ -1,0 +1,38 @@
+name: Clio
+options:
+  bundleIdPrefix: io.github.lllhr94
+  deploymentTarget:
+    iOS: "26.0"
+packages:
+  AgentKit:
+    path: ../AgentKit
+targets:
+  Clio:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    dependencies:
+      - package: AgentKit
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Clio
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        CADisableMinimumFrameDurationOnPhone: true
+        UIRequiresFullScreen: true
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSCameraUsageDescription: 拍照发给旅伴看。
+        NSMicrophoneUsageDescription: 按下说话时，用麦克风听你说的话。
+        NSSpeechRecognitionUsageDescription: 把你说的话转成文字，发给旅伴。
+        NSCalendarsFullAccessUsageDescription: 旅伴帮你查日程、加日程（加之前会问你）。
+        NSRemindersFullAccessUsageDescription: 旅伴帮你查提醒事项、加提醒（加之前会问你）。
+        NSPhotoLibraryAddUsageDescription: 保存旅伴给你的图片和笺。
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.lllhr94.clio
+        SWIFT_VERSION: "5.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGNING_ALLOWED: "NO"

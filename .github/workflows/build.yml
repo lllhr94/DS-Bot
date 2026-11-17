@@ -1,0 +1,104 @@
+# Builds Clio: tests the engine (AgentKit), then the SwiftUI app (App).
+# Produces an unsigned IPA; signing happens on the phone.
+
+name: Build
+
+on:
+  push:
+    branches: [main, clio]
+    paths:
+      - App/**
+      - AgentKit/**
+      - .github/workflows/build.yml
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner label (macos-latest, or macos-15-intel when the arm64 machines are busy)
+        default: macos-latest
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Clio (iOS, unsigned)
+    runs-on: ${{ inputs.runner || 'macos-latest' }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+        working-directory: App
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Xcode 26
+        run: |
+          XC=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$XC" ]; then sudo xcode-select -s "$XC"; fi
+          xcodebuild -version
+
+      - name: Test the engine (AgentKit)
+        working-directory: AgentKit
+        run: |
+          set -o pipefail
+          swift test 2>&1 | tail -n 80
+
+      - name: Generate the Xcode project
+        run: |
+          which xcodegen || brew install xcodegen
+          xcodegen generate
+
+      - name: Build (no code signing)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Clio.xcodeproj \
+            -scheme Clio \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee xcodebuild.log | grep -E "error|BUILD|\.swift:[0-9]+:[0-9]+: (error|warning)" | tail -n 120
+
+      - name: Package the IPA
+        run: |
+          APP="$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)"
+          test -n "$APP" || { echo "::error::没有找到 .app"; exit 1; }
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :NSCameraUsageDescription' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :NSSpeechRecognitionUsageDescription' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :NSCalendarsFullAccessUsageDescription' "$APP/Info.plist"
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry Clio-unsigned.ipa Payload
+          ls -lh Clio-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Clio-unsigned-ipa
+          path: App/Clio-unsigned.ipa
+          if-no-files-found: error
+
+      # A plain download link on the Releases page, so the IPA can be fetched from a phone.
+      - name: Publish the IPA to the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REPO="${{ github.repository }}"
+          gh release view latest --repo "$REPO" >/dev/null 2>&1 || \
+            gh release create latest --repo "$REPO" --prerelease \
+              --title "Clio（未签名 IPA，最新构建）" \
+              --notes "每次构建自动更新。下载 Clio-unsigned.ipa，用签名工具签名后安装。"
+          gh release upload latest Clio-unsigned.ipa --repo "$REPO" --clobber
+          gh release edit latest --repo "$REPO" --notes "最新构建：${{ github.sha }}。下载 Clio-unsigned.ipa，用签名工具签名后安装。"
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: xcodebuild-log
+          path: App/xcodebuild.log
+          if-no-files-found: ignore
